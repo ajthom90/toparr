@@ -10,7 +10,7 @@ from app.gpu_monitor import GpuMonitor
 class TestRingBuffer:
     def test_add_sample_and_get_current(self):
         monitor = GpuMonitor(buffer_size=300)
-        monitor.add_sample(SAMPLE_GPU_JSON)
+        monitor.add_sample(SAMPLE_GPU_JSON.copy())
         current = monitor.get_current()
         assert current is not None
         assert "timestamp" in current
