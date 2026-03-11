@@ -1,0 +1,65 @@
+name: Hardware Compatibility Report
+description: Report whether Toparr works (or doesn't) on your hardware
+labels: ["compatibility"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Help us track which hardware configurations Toparr supports. Whether it works or not, we want to know!
+
+  - type: dropdown
+    id: status
+    attributes:
+      label: Does Toparr work on your setup?
+      options:
+        - "Works fully (all features including per-client tracking)"
+        - "Partially works (GPU metrics work, but no per-client data)"
+        - "Does not work"
+    validations:
+      required: true
+
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Hardware
+      description: "CPU and GPU model. Run: `lspci | grep VGA`"
+      placeholder: |
+        CPU: Intel Core i5-12400
+        GPU: Intel UHD Graphics 730
+        lspci output: 00:02.0 VGA compatible controller: Intel Corporation Alder Lake-S GT1 [UHD Graphics 730]
+    validations:
+      required: true
+
+  - type: input
+    id: kernel
+    attributes:
+      label: Kernel version
+      description: "Run: `uname -r`"
+      placeholder: "6.12.33-production+truenas"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Host OS / Distribution
+      placeholder: "TrueNAS SCALE 24.10"
+    validations:
+      required: true
+
+  - type: input
+    id: gpu-driver
+    attributes:
+      label: GPU driver
+      description: "Run: `lspci -k | grep -A2 VGA` and note the kernel driver line"
+      placeholder: "i915"
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Any issues, workarounds, or other details about your experience
+    validations:
+      required: false

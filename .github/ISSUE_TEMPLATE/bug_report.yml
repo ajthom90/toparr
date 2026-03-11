@@ -1,0 +1,91 @@
+name: Bug Report
+description: Report a bug or issue with Toparr
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting an issue! Please fill out the sections below so we can reproduce and fix the problem.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened? What did you expect to happen?
+      placeholder: "The dashboard shows 'Connecting...' and never loads data."
+    validations:
+      required: true
+
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Hardware
+      description: "CPU and GPU model. Run: `lspci | grep VGA`"
+      placeholder: |
+        CPU: Intel Core i5-12400
+        GPU: Intel UHD Graphics 730
+        lspci output: 00:02.0 VGA compatible controller: Intel Corporation Alder Lake-S GT1 [UHD Graphics 730]
+    validations:
+      required: true
+
+  - type: input
+    id: kernel
+    attributes:
+      label: Kernel version
+      description: "Run: `uname -r`"
+      placeholder: "6.12.33-production+truenas"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Host OS / Distribution
+      description: e.g. TrueNAS SCALE, Ubuntu 24.04, Unraid 7.0, Debian 12
+      placeholder: "TrueNAS SCALE 24.10"
+    validations:
+      required: true
+
+  - type: input
+    id: gpu-driver
+    attributes:
+      label: GPU driver
+      description: "Run: `lspci -k | grep -A2 VGA` and note the kernel driver line"
+      placeholder: "i915"
+    validations:
+      required: true
+
+  - type: input
+    id: docker-version
+    attributes:
+      label: Docker version
+      description: "Run: `docker --version`"
+      placeholder: "Docker version 27.4.1"
+    validations:
+      required: true
+
+  - type: textarea
+    id: docker-compose
+    attributes:
+      label: Docker Compose configuration
+      description: Paste your docker-compose.yml (redact any sensitive values)
+      render: yaml
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Container logs
+      description: "Run: `docker logs toparr` and paste the output"
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Screenshots, browser console errors, or anything else that might help
+    validations:
+      required: false
