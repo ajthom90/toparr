@@ -73,6 +73,13 @@ async def stream(request: Request):
                                 {"status": "waiting", "error": error}
                             ),
                         }
+                    else:
+                        yield {
+                            "event": "status",
+                            "data": json.dumps(
+                                {"status": "starting"}
+                            ),
+                        }
                     continue
 
                 if isinstance(data, tuple) and data[0] == "status":

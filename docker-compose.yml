@@ -1,0 +1,20 @@
+services:
+  toparr:
+    build: .
+    # Or use a pre-built image:
+    # image: ghcr.io/ajthom90/toparr:latest
+    container_name: toparr
+    restart: unless-stopped
+    pid: host
+    devices:
+      - /dev/dri:/dev/dri
+    cap_add:
+      - CAP_PERFMON
+      - SYS_ADMIN
+      - SYS_PTRACE
+    volumes:
+      - /sys/kernel/debug:/sys/kernel/debug:ro
+    ports:
+      - "8080:8080"
+    environment:
+      - GPU_TDP_WATTS=60

@@ -18,6 +18,7 @@ class GpuMonitor:
         self._subscribers: list = []
         self._process: Optional[asyncio.subprocess.Process] = None
         self._error: Optional[str] = None
+        self._raw_lines: deque = deque(maxlen=50)
         self.gpu_name: str = self.detect_gpu_name()
         self._start_time: float = time.time()
 
@@ -41,21 +42,22 @@ class GpuMonitor:
             pass
         return "Intel GPU"
 
-    def parse_line(self, line: str) -> Optional[dict]:
-        line = line.strip()
-        if not line:
-            return None
-        line = line.lstrip("[,").rstrip("],")
-        if not line:
+    def parse_json(self, text: str) -> Optional[dict]:
+        text = text.strip().lstrip("[,").rstrip("],")
+        if not text:
             return None
         try:
-            data = json.loads(line)
+            data = json.loads(text)
             if isinstance(data, dict) and "period" in data:
                 return data
             return None
         except json.JSONDecodeError:
-            logger.debug("Skipping malformed JSON line: %s", line[:100])
+            logger.debug("Failed to parse JSON chunk: %s", text[:100])
             return None
+
+    # Keep for test compatibility
+    def parse_line(self, line: str) -> Optional[dict]:
+        return self.parse_json(line)
 
     def add_sample(self, data: dict) -> None:
         data["timestamp"] = time.time()
@@ -97,30 +99,77 @@ class GpuMonitor:
                 self._error = str(e)
                 logger.error("intel_gpu_top error: %s. Retrying in 5s...", e)
                 await self._broadcast_status("waiting", str(e))
-                await asyncio.sleep(5)
+            await asyncio.sleep(5)
 
     async def _run_gpu_top(self) -> None:
         logger.info("Starting intel_gpu_top...")
+        self._stderr_lines: list[str] = []
         self._process = await asyncio.create_subprocess_exec(
             "intel_gpu_top", "-J", "-s", "1000",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        self._error = None
-        try:
+
+        async def drain_stderr():
             while True:
-                line = await self._process.stdout.readline()
+                line = await self._process.stderr.readline()
                 if not line:
                     break
-                parsed = self.parse_line(line.decode("utf-8", errors="replace"))
-                if parsed:
-                    self.add_sample(parsed)
+                text = line.decode("utf-8", errors="replace").strip()
+                if text:
+                    logger.warning("intel_gpu_top stderr: %s", text)
+                    self._stderr_lines.append(text)
+                    # Update error immediately so SSE handler can see it
+                    self._error = f"intel_gpu_top stderr: {text}"
+
+        stderr_task = asyncio.create_task(drain_stderr())
+        json_buf = []
+        brace_depth = 0
+        try:
+            while True:
+                try:
+                    line = await asyncio.wait_for(
+                        self._process.stdout.readline(), timeout=10.0
+                    )
+                except asyncio.TimeoutError:
+                    stderr = "\n".join(self._stderr_lines[-10:])
+                    msg = (
+                        f"intel_gpu_top produced no output for 10s. "
+                        f"stderr: {stderr.strip()}" if stderr.strip()
+                        else "intel_gpu_top produced no output for 10s"
+                    )
+                    logger.error(msg)
+                    self._error = msg
+                    await self._broadcast_status("waiting", msg)
+                    self._process.kill()
+                    break
+                if not line:
+                    break
+                decoded = line.decode("utf-8", errors="replace")
+                self._raw_lines.append(decoded.strip()[:500])
+                # Track brace depth to detect complete JSON objects
+                for ch in decoded:
+                    if ch == '{':
+                        brace_depth += 1
+                    elif ch == '}':
+                        brace_depth -= 1
+                if json_buf or '{' in decoded:
+                    json_buf.append(decoded)
+                if brace_depth == 0 and json_buf:
+                    chunk = "".join(json_buf)
+                    json_buf = []
+                    parsed = self.parse_json(chunk)
+                    if parsed:
+                        self._error = None
+                        self.add_sample(parsed)
         finally:
             await self._process.wait()
-            stderr = ""
-            if self._process.stderr:
-                stderr_bytes = await self._process.stderr.read()
-                stderr = stderr_bytes.decode("utf-8", errors="replace")
+            stderr_task.cancel()
+            try:
+                await stderr_task
+            except asyncio.CancelledError:
+                pass
+            stderr = "\n".join(self._stderr_lines[-10:])
             returncode = self._process.returncode
             self._error = (
                 f"intel_gpu_top exited (code={returncode}): {stderr.strip()}"

@@ -1,1 +1,11 @@
 .superpowers/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+.playwright-mcp/
+*.egg-info/
+dist/
+build/
+.env
+docs/superpowers/
