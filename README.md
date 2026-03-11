@@ -1,6 +1,7 @@
 # Toparr
 
 [![Tests](https://github.com/ajthom90/toparr/actions/workflows/test.yml/badge.svg)](https://github.com/ajthom90/toparr/actions/workflows/test.yml)
+[![Docker](https://github.com/ajthom90/toparr/actions/workflows/docker.yml/badge.svg)](https://github.com/ajthom90/toparr/actions/workflows/docker.yml)
 
 Real-time Intel GPU monitoring dashboard in Docker. Wraps `intel_gpu_top` (from [igt-gpu-tools](https://gitlab.freedesktop.org/drm/igt-gpu-tools) v2.3) in a web UI with live-updating gauges, sparkline history, and per-process GPU client tracking.
 
@@ -43,20 +44,62 @@ This application has been developed and tested on the following specific configu
 
 ## Quick Start
 
+Using the pre-built image from GitHub Container Registry (no clone needed):
+
+```yaml
+services:
+  toparr:
+    image: ghcr.io/ajthom90/toparr:latest
+    container_name: toparr
+    restart: unless-stopped
+    pid: host
+    devices:
+      - /dev/dri:/dev/dri
+    cap_add:
+      - CAP_PERFMON
+      - SYS_ADMIN
+      - SYS_PTRACE
+    volumes:
+      - /sys/kernel/debug:/sys/kernel/debug:ro
+    ports:
+      - "8080:8080"
+    environment:
+      - GPU_TDP_WATTS=60
+```
+
 ```bash
-git clone https://github.com/ajthom90/toparr.git
-cd toparr
 docker compose up -d
 ```
 
 Open **http://localhost:8080** in your browser.
+
+### Image tags
+
+| Tag | Description |
+|---|---|
+| `latest` | Latest build from `main` branch |
+| `1.0.0` | Specific release version |
+| `1.0` | Latest patch within a minor version |
+| `1` | Latest minor/patch within a major version (not created for `v0.x` releases) |
+
+### Building from source
+
+Alternatively, clone and build locally:
+
+```bash
+git clone https://github.com/ajthom90/toparr.git
+cd toparr
+docker compose up -d --build
+```
 
 ## Docker Compose
 
 ```yaml
 services:
   toparr:
-    build: .
+    image: ghcr.io/ajthom90/toparr:latest
+    # Or build from source:
+    # build: .
     container_name: toparr
     restart: unless-stopped
     pid: host

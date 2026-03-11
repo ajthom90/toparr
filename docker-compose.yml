@@ -1,8 +1,8 @@
 services:
   toparr:
-    build: .
-    # Or use a pre-built image:
-    # image: ghcr.io/ajthom90/toparr:latest
+    image: ghcr.io/ajthom90/toparr:latest
+    # Or build from source:
+    # build: .
     container_name: toparr
     restart: unless-stopped
     pid: host
