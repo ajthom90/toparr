@@ -1,5 +1,123 @@
 <!DOCTYPE html>
 <html lang="en">
-<head><meta charset="UTF-8"><title>Intel GPU Monitor</title></head>
-<body><h1>Intel GPU Monitor</h1></body>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Intel GPU Monitor</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <!-- Header -->
+  <div class="header">
+    <div>
+      <h1>Intel GPU Monitor</h1>
+      <div class="gpu-name" id="gpu-name">Detecting GPU...</div>
+    </div>
+    <div class="status" id="connection-status">
+      <div class="status-dot"></div>
+      <span>Connecting...</span>
+    </div>
+  </div>
+
+  <!-- Error banner (hidden by default) -->
+  <div class="error-banner" id="error-banner" style="display:none;">
+    <span id="error-message"></span>
+  </div>
+
+  <!-- Top row: gauges -->
+  <div class="grid-3">
+    <div class="card">
+      <div class="card-title">GPU Busy (RC6 inverse)</div>
+      <div class="gauge-container">
+        <div class="gauge">
+          <svg viewBox="0 0 80 80">
+            <circle class="gauge-bg" cx="40" cy="40" r="34"/>
+            <circle class="gauge-fill" id="gpu-busy-arc" cx="40" cy="40" r="34"
+              stroke-dasharray="213.6" stroke-dashoffset="213.6"/>
+          </svg>
+          <div class="gauge-text" id="gpu-busy-pct">--%</div>
+        </div>
+        <div class="gauge-details">
+          <div class="label">Interrupts/s</div>
+          <div class="value" id="interrupts-val">--</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Frequency</div>
+      <div class="freq-display">
+        <span class="freq-current" id="freq-actual">--</span>
+        <span class="freq-unit">MHz</span>
+        <div class="freq-sub">
+          <div class="item">
+            <div class="val" id="freq-requested">--</div>
+            <div class="lbl">Requested</div>
+          </div>
+          <div class="item">
+            <div class="val" id="freq-actual-sub">--</div>
+            <div class="lbl">Actual</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Power</div>
+      <div class="power-display">
+        <span class="power-current" id="power-gpu">--</span>
+        <span class="power-unit">W</span>
+        <div class="power-bar-container">
+          <div class="power-bar-track">
+            <div class="power-bar-fill" id="power-bar"></div>
+          </div>
+          <div class="power-bar-labels">
+            <span>0W</span>
+            <span id="power-tdp-label">--W TDP</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Middle row: engines + sparklines -->
+  <div class="grid-2">
+    <div class="card">
+      <div class="section-label">Engine Utilization</div>
+      <div id="engine-bars">
+        <div class="placeholder-text">Waiting for data...</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="section-label">History (5 min)</div>
+      <div id="sparklines">
+        <div class="placeholder-text">Waiting for data...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom: clients table -->
+  <div class="card">
+    <div class="section-label">Active Clients</div>
+    <table class="clients-table">
+      <thead id="clients-head">
+        <tr>
+          <th>PID</th>
+          <th>Name</th>
+        </tr>
+      </thead>
+      <tbody id="clients-body">
+        <tr><td colspan="2" class="placeholder-text">No active clients</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Footer -->
+  <div class="footer">
+    Intel GPU Monitor — <span id="footer-status">Connecting...</span> — Uptime: <span id="uptime">--</span>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
 </html>
