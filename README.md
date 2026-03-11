@@ -1,5 +1,7 @@
 # Toparr
 
+[![Tests](https://github.com/ajthom90/toparr/actions/workflows/test.yml/badge.svg)](https://github.com/ajthom90/toparr/actions/workflows/test.yml)
+
 Real-time Intel GPU monitoring dashboard in Docker. Wraps `intel_gpu_top` (from [igt-gpu-tools](https://gitlab.freedesktop.org/drm/igt-gpu-tools) v2.3) in a web UI with live-updating gauges, sparkline history, and per-process GPU client tracking.
 
 ![Toparr Dashboard](screenshots/dashboard.png)
@@ -12,9 +14,30 @@ Real-time Intel GPU monitoring dashboard in Docker. Wraps `intel_gpu_top` (from 
 - **SSE streaming** — updates push to the browser every second with no polling
 - **Dark theme dashboard** — clean, responsive UI
 
+## Tested Setup
+
+This application has been developed and tested on the following specific configuration:
+
+| Component | Details |
+|---|---|
+| **CPU** | Intel Core i3-13100 (Alder Lake) |
+| **GPU** | Intel UHD Graphics 730 (integrated) |
+| **Host OS** | TrueNAS SCALE |
+| **Kernel** | Linux 6.12.x (production+truenas) |
+| **Driver** | i915 |
+
+> **Disclaimer:** This software is provided as-is and may not work on all hardware configurations, kernels, or Linux distributions. In particular:
+>
+> - **Only Intel integrated GPUs using the i915 driver are supported.** Discrete Intel Arc GPUs (using the xe driver) have not been tested and may require modifications.
+> - **Kernel compatibility varies.** Different kernel versions may have different debugfs layouts, fdinfo formats, or perf counter access methods. The per-client tracking feature requires kernel 5.19+ with fdinfo support.
+> - **Container runtime differences** between Docker, Podman, and other runtimes may affect device access, capability handling, or PID namespace behavior.
+> - **NAS and appliance OSes** (TrueNAS, Unraid, Synology, etc.) may have custom kernels with non-standard module configurations.
+>
+> If you encounter issues on a different setup, please open an issue with your hardware details, kernel version (`uname -r`), and GPU info (`lspci | grep VGA`). Contributions to support additional configurations are welcome!
+
 ## Requirements
 
-- Linux host with an Intel GPU (tested with UHD 730 / Alder Lake)
+- Linux host with an Intel GPU (see [Tested Setup](#tested-setup) above)
 - Docker and Docker Compose
 - Kernel 4.16+ (for i915 perf support); kernel 5.19+ recommended for per-client fdinfo
 
@@ -98,7 +121,32 @@ pip install -r requirements.txt
 pytest
 ```
 
-Tests run without a real GPU — they test JSON parsing, sample buffering, and the API layer with mocked data.
+Tests run without a real GPU — they test JSON parsing, sample buffering, and the API layer with mocked data. CI runs the test suite on Python 3.11, 3.12, and 3.13 for every push and pull request.
+
+## Contributing
+
+Contributions are welcome! This project has only been tested on one specific hardware/OS combination (see [Tested Setup](#tested-setup)), so there are many opportunities to help:
+
+- **Hardware support** — test on different Intel GPUs (Arc, older generations, different Alder/Raptor Lake SKUs) and report or fix compatibility issues
+- **Driver support** — add support for the `xe` driver used by Intel Arc discrete GPUs
+- **Kernel compatibility** — test on different kernel versions and distributions, fix any debugfs/fdinfo format differences
+- **Container runtimes** — verify and fix behavior on Podman, LXC, or other runtimes
+- **NAS platforms** — test on Unraid, Synology, or other NAS distributions
+
+### How to contribute
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b my-feature`)
+3. Make your changes
+4. Run the tests (`pytest tests/ -v`) — all tests must pass
+5. Open a pull request with details about your setup and what you changed
+
+When reporting issues, please include:
+- Hardware: CPU and GPU model
+- OS and kernel version (`uname -a`)
+- GPU driver in use (`lspci -k | grep -A2 VGA`)
+- Docker version (`docker --version`)
+- Container logs (`docker logs toparr`)
 
 ## Troubleshooting
 
@@ -119,4 +167,4 @@ Tests run without a real GPU — they test JSON parsing, sample buffering, and t
 
 ## License
 
-MIT
+[MIT](LICENSE)
