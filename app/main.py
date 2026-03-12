@@ -53,6 +53,25 @@ async def status():
     }
 
 
+@app.get("/api/debug")
+async def debug():
+    current = monitor.get_current()
+    return {
+        "gpu_name": monitor.gpu_name,
+        "uptime_seconds": monitor.uptime_seconds,
+        "error": monitor.get_error(),
+        "raw_lines": list(monitor._raw_lines),
+        "has_clients": bool(
+            current and current.get("clients")
+            and len(current["clients"]) > 0
+        ),
+        "current_clients": current.get("clients", {}) if current else {},
+        "current_sample_keys": list(current.keys()) if current else [],
+        "buffer_size": len(monitor._buffer),
+        "subscriber_count": len(monitor._subscribers),
+    }
+
+
 @app.get("/api/stream")
 async def stream(request: Request):
     queue = monitor.subscribe()
