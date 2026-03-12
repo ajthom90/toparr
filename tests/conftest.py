@@ -18,9 +18,19 @@ SAMPLE_GPU_JSON = {
         "1234": {
             "pid": "4821",
             "name": "Plex Transcoder",
+            "cmdline": "/usr/lib/plexmediaserver/Plex Transcoder -i /media/movie.mkv",
             "engine-classes": {
                 "Render/3D": {"busy": "38.0", "unit": "%"},
                 "Video": {"busy": "72.0", "unit": "%"},
+            },
+            "memory": {
+                "system": {
+                    "total": "232411136",
+                    "shared": "0",
+                    "resident": "122638336",
+                    "purgeable": "634880",
+                    "active": "4018176",
+                }
             },
         }
     },

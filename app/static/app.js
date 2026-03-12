@@ -17,6 +17,7 @@
   var gpuName = "";
   var startTime = Date.now();
   var connected = false;
+  var latestSample = null;
 
   // --- DOM refs ---
   function $(id) { return document.getElementById(id); }
@@ -24,6 +25,8 @@
   // --- Init ---
   async function init() {
     await fetchStatus();
+    await fetchGpus();
+    initModal();
     connectSSE();
   }
 
@@ -134,6 +137,7 @@
   // --- Render ---
   function render(sample) {
     if (!sample) return;
+    latestSample = sample;
     renderGpuBusy(sample);
     renderFrequency(sample);
     renderPower(sample);
@@ -251,9 +255,9 @@
     }
 
     var engineClasses = {};
-    var clients = Object.values(sample.clients);
-    for (var i = 0; i < clients.length; i++) {
-      var ec = clients[i]["engine-classes"];
+    var clientEntries = Object.entries(sample.clients);
+    for (var i = 0; i < clientEntries.length; i++) {
+      var ec = clientEntries[i][1]["engine-classes"];
       if (ec) {
         var ecKeys = Object.keys(ec);
         for (var j = 0; j < ecKeys.length; j++) {
@@ -271,11 +275,13 @@
     thead.innerHTML = headerHtml;
 
     var rows = "";
-    for (var i = 0; i < clients.length; i++) {
-      var client = clients[i];
+    for (var i = 0; i < clientEntries.length; i++) {
+      var clientId = clientEntries[i][0];
+      var client = clientEntries[i][1];
       var name = client.name || "unknown";
       var pid = client.pid || "?";
-      rows += '<tr><td>' + pid + '</td><td style="color:#60a5fa">' + name + '</td>';
+      rows += '<tr><td>' + pid + '</td>';
+      rows += '<td class="client-name" data-client-id="' + clientId + '">' + name + '</td>';
       for (var j = 0; j < ecList.length; j++) {
         var data = client["engine-classes"] ? client["engine-classes"][ecList[j]] : null;
         var busy = data ? parseFloat(data.busy) : 0;
@@ -284,6 +290,126 @@
       rows += '</tr>';
     }
     tbody.innerHTML = rows;
+
+    // Attach click handlers for client names
+    var nameEls = tbody.querySelectorAll(".client-name");
+    for (var i = 0; i < nameEls.length; i++) {
+      nameEls[i].addEventListener("click", function () {
+        var cid = this.getAttribute("data-client-id");
+        if (latestSample && latestSample.clients && latestSample.clients[cid]) {
+          openClientModal(latestSample.clients[cid]);
+        }
+      });
+    }
+  }
+
+  // --- GPU selector ---
+  async function fetchGpus() {
+    try {
+      var resp = await fetch("/api/gpus");
+      var data = await resp.json();
+      var gpus = data.gpus || [];
+      if (gpus.length <= 1) return;
+      var sel = $("gpu-select");
+      sel.innerHTML = "";
+      for (var i = 0; i < gpus.length; i++) {
+        var opt = document.createElement("option");
+        opt.value = gpus[i].device;
+        opt.textContent = gpus[i].name;
+        if (gpus[i].device === data.current_device) opt.selected = true;
+        sel.appendChild(opt);
+      }
+      sel.style.display = "";
+      sel.addEventListener("change", async function () {
+        var device = this.value;
+        await fetch("/api/gpus/select", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ device: device }),
+        });
+        history = [];
+        engineNames = [];
+        $("gpu-name").textContent = this.options[this.selectedIndex].textContent;
+      });
+    } catch (e) {
+      console.error("Failed to fetch GPUs:", e);
+    }
+  }
+
+  // --- Client detail modal ---
+  function formatBytes(bytes) {
+    var val = parseInt(bytes, 10);
+    if (isNaN(val) || val === 0) return "0 B";
+    var units = ["B", "KB", "MB", "GB"];
+    var idx = 0;
+    var num = val;
+    while (num >= 1024 && idx < units.length - 1) {
+      num /= 1024;
+      idx++;
+    }
+    return num.toFixed(1) + " " + units[idx];
+  }
+
+  function openClientModal(client) {
+    $("modal-title").textContent = (client.name || "Unknown") + " (PID " + (client.pid || "?") + ")";
+
+    var html = "";
+
+    // Command line
+    var cmdline = client.cmdline || "Not available";
+    html += '<div class="detail-section">';
+    html += '<div class="detail-label">Command Line</div>';
+    html += '<div class="cmdline">' + cmdline + '</div>';
+    html += '</div>';
+
+    // Memory
+    if (client.memory && client.memory.system) {
+      var mem = client.memory.system;
+      html += '<div class="detail-section">';
+      html += '<div class="detail-label">Memory</div>';
+      html += '<table class="mem-table">';
+      html += '<tr><td>Total</td><td>' + formatBytes(mem.total) + '</td></tr>';
+      html += '<tr><td>Resident</td><td>' + formatBytes(mem.resident) + '</td></tr>';
+      html += '<tr><td>Active</td><td>' + formatBytes(mem.active) + '</td></tr>';
+      html += '<tr><td>Shared</td><td>' + formatBytes(mem.shared) + '</td></tr>';
+      html += '<tr><td>Purgeable</td><td>' + formatBytes(mem.purgeable) + '</td></tr>';
+      html += '</table>';
+      html += '</div>';
+    }
+
+    // Engine classes
+    var ec = client["engine-classes"];
+    if (ec) {
+      html += '<div class="detail-section">';
+      html += '<div class="detail-label">Engine Utilization</div>';
+      html += '<table class="engine-table">';
+      var ecKeys = Object.keys(ec).sort();
+      for (var i = 0; i < ecKeys.length; i++) {
+        var busy = parseFloat(ec[ecKeys[i]].busy);
+        var color = engineColor(ecKeys[i]);
+        html += '<tr><td>' + ecKeys[i].replace("/3D", "") + '</td>';
+        html += '<td style="color:' + color + '">' + busy.toFixed(2) + '%</td></tr>';
+      }
+      html += '</table>';
+      html += '</div>';
+    }
+
+    $("modal-body").innerHTML = html;
+    $("modal-backdrop").style.display = "flex";
+  }
+
+  function closeModal() {
+    $("modal-backdrop").style.display = "none";
+  }
+
+  function initModal() {
+    $("modal-close").addEventListener("click", closeModal);
+    $("modal-backdrop").addEventListener("click", function (e) {
+      if (e.target === this) closeModal();
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") closeModal();
+    });
   }
 
   function renderFooter() {

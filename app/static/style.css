@@ -87,7 +87,110 @@ body {
 .clients-table td { padding: 8px; border-bottom: 1px solid #1e2d3d; }
 .clients-table tr:last-child td { border-bottom: none; }
 
+.clients-table td.client-name { color: #60a5fa; cursor: pointer; }
+.clients-table td.client-name:hover { text-decoration: underline; }
+
 .placeholder-text { color: #555; font-size: 13px; font-style: italic; padding: 8px 0; }
+
+.gpu-name-row { display: flex; align-items: center; gap: 8px; }
+.gpu-select {
+  background: #0f1419;
+  color: #e0e0e0;
+  border: 1px solid #2a3544;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  outline: none;
+}
+.gpu-select:hover { border-color: #60a5fa; }
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.modal {
+  background: #1a2332;
+  border-radius: 12px;
+  border: 1px solid #2a3544;
+  width: 90%;
+  max-width: 600px;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid #2a3544;
+  font-size: 16px;
+  font-weight: 600;
+  color: #60a5fa;
+}
+.modal-close {
+  background: none;
+  border: none;
+  color: #888;
+  font-size: 24px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+.modal-close:hover { color: #e0e0e0; }
+.modal-body { padding: 20px; }
+.modal-body .detail-section { margin-bottom: 16px; }
+.modal-body .detail-section:last-child { margin-bottom: 0; }
+.modal-body .detail-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #666;
+  margin-bottom: 4px;
+}
+.modal-body .detail-value {
+  font-size: 13px;
+  color: #e0e0e0;
+}
+.modal-body .cmdline {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  background: #0f1419;
+  padding: 10px 12px;
+  border-radius: 6px;
+  word-break: break-all;
+  white-space: pre-wrap;
+  color: #ccc;
+  max-height: 120px;
+  overflow-y: auto;
+}
+.modal-body .mem-table {
+  width: 100%;
+  font-size: 12px;
+  border-collapse: collapse;
+}
+.modal-body .mem-table td {
+  padding: 4px 8px;
+  border-bottom: 1px solid #1e2d3d;
+}
+.modal-body .mem-table td:first-child { color: #888; }
+.modal-body .mem-table td:last-child { text-align: right; font-weight: 500; }
+.modal-body .engine-table {
+  width: 100%;
+  font-size: 12px;
+  border-collapse: collapse;
+}
+.modal-body .engine-table td {
+  padding: 4px 8px;
+  border-bottom: 1px solid #1e2d3d;
+}
+.modal-body .engine-table td:first-child { color: #888; }
+.modal-body .engine-table td:last-child { text-align: right; font-weight: 500; }
 
 .footer { text-align: center; font-size: 11px; color: #444; margin-top: 12px; }
 

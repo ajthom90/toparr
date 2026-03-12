@@ -1,6 +1,8 @@
 import asyncio
 import json
 import logging
+import os
+import re
 import subprocess
 import time
 from collections import deque
@@ -12,13 +14,17 @@ SYSFS_GPU_NAME = "/sys/class/drm/card0/device/product_name"
 
 
 class GpuMonitor:
-    def __init__(self, buffer_size: int = 300):
+    def __init__(self, buffer_size: int = 300, device: Optional[str] = None):
         self._buffer: deque = deque(maxlen=buffer_size)
+        self._buffer_size = buffer_size
         self._current: Optional[dict] = None
         self._subscribers: list = []
         self._process: Optional[asyncio.subprocess.Process] = None
         self._error: Optional[str] = None
         self._raw_lines: deque = deque(maxlen=50)
+        self._device: Optional[str] = device
+        self._available_gpus: list[dict] = []
+        self._run_task: Optional[asyncio.Task] = None
         self.gpu_name: str = self.detect_gpu_name()
         self._start_time: float = time.time()
 
@@ -59,8 +65,81 @@ class GpuMonitor:
     def parse_line(self, line: str) -> Optional[dict]:
         return self.parse_json(line)
 
+    @staticmethod
+    def _read_cmdline(pid: str) -> Optional[str]:
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                raw = f.read()
+            if not raw:
+                return None
+            return raw.replace(b"\x00", b" ").decode(
+                "utf-8", errors="replace"
+            ).strip()
+        except (FileNotFoundError, PermissionError, ProcessLookupError):
+            return None
+
+    def _enrich_clients(self, data: dict) -> None:
+        clients = data.get("clients")
+        if not clients:
+            return
+        for client in clients.values():
+            pid = client.get("pid")
+            if pid:
+                client["cmdline"] = self._read_cmdline(pid)
+
+    @staticmethod
+    def list_gpus() -> list[dict]:
+        try:
+            result = subprocess.run(
+                ["intel_gpu_top", "-L"],
+                capture_output=True, text=True, timeout=5,
+            )
+            gpus = []
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                # Format: "card0   Intel foo bar"
+                match = re.match(r"^(\S+)\s+(.+)$", line)
+                if match:
+                    gpus.append({
+                        "device": match.group(1),
+                        "name": match.group(2).strip(),
+                    })
+            return gpus
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            logger.warning("Failed to list GPUs: %s", e)
+            return []
+
+    @property
+    def current_device(self) -> Optional[str]:
+        return self._device
+
+    @property
+    def available_gpus(self) -> list[dict]:
+        return self._available_gpus
+
+    def discover_gpus(self) -> list[dict]:
+        self._available_gpus = self.list_gpus()
+        return self._available_gpus
+
+    async def select_device(self, device: Optional[str]) -> None:
+        self._device = device
+        self._buffer.clear()
+        self._current = None
+        self._error = None
+        # Update GPU name for the selected device
+        for gpu in self._available_gpus:
+            if gpu["device"] == device:
+                self.gpu_name = gpu["name"]
+                break
+        # Kill current process so run() restarts with new device
+        if self._process and self._process.returncode is None:
+            self._process.kill()
+
     def add_sample(self, data: dict) -> None:
         data["timestamp"] = time.time()
+        self._enrich_clients(data)
         self._current = data
         self._buffer.append(data)
         for queue in self._subscribers:
@@ -102,10 +181,13 @@ class GpuMonitor:
             await asyncio.sleep(5)
 
     async def _run_gpu_top(self) -> None:
-        logger.info("Starting intel_gpu_top...")
+        cmd = ["intel_gpu_top", "-J", "-s", "1000"]
+        if self._device:
+            cmd.extend(["-d", self._device])
+        logger.info("Starting %s", " ".join(cmd))
         self._stderr_lines: list[str] = []
         self._process = await asyncio.create_subprocess_exec(
-            "intel_gpu_top", "-J", "-s", "1000",
+            *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

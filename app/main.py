@@ -21,6 +21,7 @@ monitor = GpuMonitor(buffer_size=300)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    monitor.discover_gpus()
     task = asyncio.create_task(monitor.run())
     yield
     task.cancel()
@@ -51,6 +52,30 @@ async def status():
         "current": monitor.get_current(),
         "history": monitor.get_history(),
         "tdp_watts": tdp,
+    }
+
+
+@app.get("/api/gpus")
+async def gpus():
+    return {
+        "gpus": monitor.available_gpus,
+        "current_device": monitor.current_device,
+    }
+
+
+@app.post("/api/gpus/select")
+async def select_gpu(request: Request):
+    body = await request.json()
+    device = body.get("device")
+    # Validate device is in discovered list
+    valid_devices = [g["device"] for g in monitor.available_gpus]
+    if device is not None and device not in valid_devices:
+        return {"error": f"Unknown device: {device}"}, 400
+    await monitor.select_device(device)
+    return {
+        "status": "ok",
+        "device": device,
+        "gpu_name": monitor.gpu_name,
     }
 
 

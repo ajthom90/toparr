@@ -12,7 +12,10 @@
   <div class="header">
     <div>
       <h1>Intel GPU Monitor</h1>
-      <div class="gpu-name" id="gpu-name">Detecting GPU...</div>
+      <div class="gpu-name-row">
+        <span class="gpu-name" id="gpu-name">Detecting GPU...</span>
+        <select class="gpu-select" id="gpu-select" style="display:none"></select>
+      </div>
     </div>
     <div class="status" id="connection-status">
       <div class="status-dot"></div>
@@ -117,6 +120,17 @@
   <!-- Footer -->
   <div class="footer">
     Intel GPU Monitor — <span id="footer-status">Connecting...</span> — Uptime: <span id="uptime">--</span>
+  </div>
+
+  <!-- Client detail modal -->
+  <div class="modal-backdrop" id="modal-backdrop" style="display:none">
+    <div class="modal">
+      <div class="modal-header">
+        <span id="modal-title"></span>
+        <button class="modal-close" id="modal-close">&times;</button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+    </div>
   </div>
 
   <script src="/static/app.js"></script>
