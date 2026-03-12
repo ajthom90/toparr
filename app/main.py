@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -56,11 +57,72 @@ async def status():
 @app.get("/api/debug")
 async def debug():
     current = monitor.get_current()
+
+    # Check container permissions relevant to per-client tracking
+    checks = {}
+    checks["pid_namespace"] = "host" if os.path.exists("/proc/1/cmdline") else "container"
+    try:
+        with open("/proc/1/cmdline", "rb") as f:
+            checks["pid1_cmdline"] = f.read().replace(b"\x00", b" ").decode(
+                "utf-8", errors="replace"
+            ).strip()
+    except (FileNotFoundError, PermissionError) as e:
+        checks["pid1_cmdline"] = str(e)
+
+    # Check if we can read fdinfo for any process
+    fdinfo_sample = None
+    try:
+        for pid_dir in os.listdir("/proc"):
+            if not pid_dir.isdigit():
+                continue
+            fdinfo_path = f"/proc/{pid_dir}/fdinfo"
+            if os.path.isdir(fdinfo_path):
+                try:
+                    entries = os.listdir(fdinfo_path)
+                    fdinfo_sample = {
+                        "pid": pid_dir,
+                        "fdinfo_count": len(entries),
+                        "readable": True,
+                    }
+                    break
+                except PermissionError:
+                    fdinfo_sample = {
+                        "pid": pid_dir,
+                        "readable": False,
+                        "error": "PermissionError",
+                    }
+                    break
+    except Exception as e:
+        fdinfo_sample = {"error": str(e)}
+    checks["fdinfo_access"] = fdinfo_sample
+
+    # Check capabilities
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("Cap"):
+                    key = line.split(":")[0].strip()
+                    checks[key] = line.split(":")[1].strip()
+    except (FileNotFoundError, PermissionError):
+        checks["capabilities"] = "unreadable"
+
+    # Check intel_gpu_top version
+    try:
+        result = subprocess.run(
+            ["intel_gpu_top", "--help"],
+            capture_output=True, text=True, timeout=5,
+        )
+        checks["intel_gpu_top_help"] = (
+            result.stdout[:500] + result.stderr[:500]
+        ).strip()
+    except Exception as e:
+        checks["intel_gpu_top_help"] = str(e)
+
     return {
         "gpu_name": monitor.gpu_name,
         "uptime_seconds": monitor.uptime_seconds,
         "error": monitor.get_error(),
-        "raw_lines": list(monitor._raw_lines),
+        "raw_lines": list(monitor._raw_lines)[-5:],
         "has_clients": bool(
             current and current.get("clients")
             and len(current["clients"]) > 0
@@ -69,6 +131,7 @@ async def debug():
         "current_sample_keys": list(current.keys()) if current else [],
         "buffer_size": len(monitor._buffer),
         "subscriber_count": len(monitor._subscribers),
+        "environment_checks": checks,
     }
 
 

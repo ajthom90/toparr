@@ -105,7 +105,7 @@ class GpuMonitor:
         logger.info("Starting intel_gpu_top...")
         self._stderr_lines: list[str] = []
         self._process = await asyncio.create_subprocess_exec(
-            "intel_gpu_top", "-J", "-l", "-s", "1000",
+            "intel_gpu_top", "-J", "-s", "1000",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
