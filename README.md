@@ -29,12 +29,20 @@ This application has been developed and tested on the following specific configu
 
 > **Disclaimer:** This software is provided as-is and may not work on all hardware configurations, kernels, or Linux distributions. In particular:
 >
-> - **Only Intel integrated GPUs using the i915 driver are supported.** Discrete Intel Arc GPUs (using the xe driver) have not been tested and may require modifications.
+> - **Only Intel integrated GPUs using the i915 driver have been tested.** Discrete Intel Arc GPUs (using the xe driver) have not been tested and may require modifications.
 > - **Kernel compatibility varies.** Different kernel versions may have different debugfs layouts, fdinfo formats, or perf counter access methods. The per-client tracking feature requires kernel 5.19+ with fdinfo support.
 > - **Container runtime differences** between Docker, Podman, and other runtimes may affect device access, capability handling, or PID namespace behavior.
 > - **NAS and appliance OSes** (TrueNAS, Unraid, Synology, etc.) may have custom kernels with non-standard module configurations.
 >
 > If you encounter issues on a different setup, please open an issue with your hardware details, kernel version (`uname -r`), and GPU info (`lspci | grep VGA`). Contributions to support additional configurations are welcome!
+
+### Testing Help Appreciated
+
+If anyone has any of the following hardware and would like to test this application with those scenarios, it would be appreciated! If you test this application on your system, open an issue using the Hardware Compatability Report template to let me know if it works or not!
+- Any Intel iGPU
+- Intel iGPU alongside an Intel Arc GPU
+- No Intel iGPU (F-series CPU) with an Intel Arc GPU
+- ARM64 PC with an Intel Arc GPU (the Docker container is built for both amd64 and arm64)
 
 ## Requirements
 
@@ -42,57 +50,13 @@ This application has been developed and tested on the following specific configu
 - Docker and Docker Compose
 - Kernel 4.16+ (for i915 perf support); kernel 5.19+ recommended for per-client fdinfo
 
-## Quick Start
+## Installation
 
-Using the pre-built image from GitHub Container Registry (no clone needed):
+### TrueNAS 
 
-```yaml
-services:
-  toparr:
-    image: ghcr.io/ajthom90/toparr:latest
-    container_name: toparr
-    restart: unless-stopped
-    pid: host
-    devices:
-      - /dev/dri:/dev/dri
-    cap_add:
-      - CAP_PERFMON
-      - SYS_ADMIN
-      - SYS_PTRACE
-    volumes:
-      - /sys/kernel/debug:/sys/kernel/debug:ro
-    ports:
-      - "8080:8080"
-    environment:
-      - GPU_TDP_WATTS=60
-```
+Toparr is available in the community train of the TrueNAS Apps Catalog.
 
-```bash
-docker compose up -d
-```
-
-Open **http://localhost:8080** in your browser.
-
-### Image tags
-
-| Tag | Description |
-|---|---|
-| `latest` | Latest build from `main` branch |
-| `1.0.0` | Specific release version |
-| `1.0` | Latest patch within a minor version |
-| `1` | Latest minor/patch within a major version (not created for `v0.x` releases) |
-
-### Building from source
-
-Alternatively, clone and build locally:
-
-```bash
-git clone https://github.com/ajthom90/toparr.git
-cd toparr
-docker compose up -d --build
-```
-
-## Docker Compose
+### Docker Compose
 
 ```yaml
 services:
@@ -117,7 +81,13 @@ services:
       - GPU_TDP_WATTS=60
 ```
 
-### Required settings explained
+```bash
+docker compose up -d
+```
+
+Open **http://localhost:8080** in your browser.
+
+#### Required settings explained
 
 | Setting | Why |
 |---|---|
@@ -128,11 +98,30 @@ services:
 | `pid: host` | See host PIDs so `intel_gpu_top` can match GPU clients to processes |
 | `volumes: /sys/kernel/debug` | Mount debugfs for DRI client discovery |
 
-### Environment variables
+#### Environment variables
 
 | Variable | Default | Description |
 |---|---|---|
 | `GPU_TDP_WATTS` | `60` | GPU TDP in watts (used for the power gauge scale) |
+
+### Image tags
+
+| Tag | Description |
+|---|---|
+| `latest` | Latest build from `main` branch |
+| `1.0.0` | Specific release version |
+| `1.0` | Latest patch within a minor version |
+| `1` | Latest minor/patch within a major version (not created for `v0.x` releases) |
+
+### Building from source
+
+Alternatively, clone and build locally:
+
+```bash
+git clone https://github.com/ajthom90/toparr.git
+cd toparr
+docker compose up -d --build
+```
 
 ## Architecture
 
