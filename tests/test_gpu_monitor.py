@@ -20,12 +20,11 @@ class TestRingBuffer:
         monitor = GpuMonitor(buffer_size=5)
         for i in range(10):
             sample = SAMPLE_GPU_JSON.copy()
-            sample["interrupts"] = {"unit": "irq/s", "count": float(i)}
+            sample["gpu_busy"] = float(i)
             monitor.add_sample(sample)
         history = monitor.get_history()
         assert len(history) == 5
-        # Oldest should be sample 5 (0-4 evicted)
-        assert history[0]["interrupts"]["count"] == 5.0
+        assert history[0]["gpu_busy"] == 5.0
 
     def test_get_current_when_empty(self):
         monitor = GpuMonitor(buffer_size=300)
@@ -34,60 +33,6 @@ class TestRingBuffer:
     def test_get_history_when_empty(self):
         monitor = GpuMonitor(buffer_size=300)
         assert monitor.get_history() == []
-
-
-class TestJsonParsing:
-    def test_parse_full_sample(self):
-        monitor = GpuMonitor(buffer_size=300)
-        line = json.dumps(SAMPLE_GPU_JSON)
-        result = monitor.parse_line(line)
-        assert result is not None
-        assert result["engines"]["Video/0"]["busy"] == 87.0
-
-    def test_parse_minimal_sample(self):
-        monitor = GpuMonitor(buffer_size=300)
-        line = json.dumps(SAMPLE_GPU_JSON_MINIMAL)
-        result = monitor.parse_line(line)
-        assert result is not None
-        assert "power" not in result
-
-    def test_parse_malformed_json_returns_none(self):
-        monitor = GpuMonitor(buffer_size=300)
-        assert monitor.parse_line("not json at all") is None
-        assert monitor.parse_line("{incomplete") is None
-
-    def test_parse_strips_leading_comma(self):
-        """intel_gpu_top v1.18+ may prefix lines with commas."""
-        monitor = GpuMonitor(buffer_size=300)
-        line = "," + json.dumps(SAMPLE_GPU_JSON)
-        result = monitor.parse_line(line)
-        assert result is not None
-        assert result["frequency"]["requested"] == 1350.0
-
-    def test_parse_strips_brackets(self):
-        """First/last lines may have [ or ] characters."""
-        monitor = GpuMonitor(buffer_size=300)
-        line = "[" + json.dumps(SAMPLE_GPU_JSON)
-        result = monitor.parse_line(line)
-        assert result is not None
-
-
-class TestGpuName:
-    @patch(
-        "app.gpu_monitor.open",
-        side_effect=lambda *a, **kw: __import__("io").StringIO(
-            "Intel UHD Graphics 730\n"
-        ),
-    )
-    def test_detect_gpu_name_from_sysfs(self, mock_open):
-        name = GpuMonitor.detect_gpu_name()
-        assert "730" in name
-
-    @patch("app.gpu_monitor.open", side_effect=FileNotFoundError)
-    @patch("subprocess.run", side_effect=FileNotFoundError)
-    def test_fallback_gpu_name(self, mock_run, mock_open):
-        name = GpuMonitor.detect_gpu_name()
-        assert name == "Intel GPU"
 
 
 class TestCmdlineEnrichment:
@@ -110,7 +55,7 @@ class TestCmdlineEnrichment:
     def test_enrich_clients_adds_cmdline(self, _):
         monitor = GpuMonitor(buffer_size=300)
         data = {
-            "period": {"unit": "ms", "duration": 1000.0},
+            "period": {"duration": 1000.0},
             "clients": {
                 "1234": {"pid": "4821", "name": "Plex Transcoder"},
             },
@@ -120,35 +65,39 @@ class TestCmdlineEnrichment:
 
     def test_enrich_clients_empty(self):
         monitor = GpuMonitor(buffer_size=300)
-        data = {"period": {"unit": "ms", "duration": 1000.0}, "clients": {}}
+        data = {"period": {"duration": 1000.0}, "clients": {}}
         monitor._enrich_clients(data)
         assert data["clients"] == {}
 
 
-class TestGpuDiscovery:
-    @patch("subprocess.run")
-    def test_list_gpus(self, mock_run):
-        mock_run.return_value.stdout = (
-            "card0   Intel UHD Graphics 730\n"
-            "card1   Intel Arc A770\n"
-        )
-        gpus = GpuMonitor.list_gpus()
-        assert len(gpus) == 2
-        assert gpus[0]["device"] == "card0"
-        assert gpus[0]["name"] == "Intel UHD Graphics 730"
-        assert gpus[1]["device"] == "card1"
-        assert gpus[1]["name"] == "Intel Arc A770"
+class TestDeviceManagement:
+    def test_discover_gpus_with_backend(self):
+        from app.backends.base import GpuBackend
 
-    @patch("subprocess.run", side_effect=FileNotFoundError)
-    def test_list_gpus_no_binary(self, _):
-        gpus = GpuMonitor.list_gpus()
-        assert gpus == []
+        class FakeBackend(GpuBackend):
+            def discover_devices(self):
+                return [{"device": "card0", "name": "Test GPU", "driver": "i915"}]
+            def read_sample(self, device):
+                return {}
+            def cleanup(self):
+                pass
 
-    def test_discover_gpus_stores_result(self):
-        with patch.object(GpuMonitor, "list_gpus", return_value=[
-            {"device": "card0", "name": "Test GPU"},
-        ]):
-            monitor = GpuMonitor(buffer_size=300)
-            result = monitor.discover_gpus()
-            assert len(result) == 1
-            assert monitor.available_gpus == result
+        monitor = GpuMonitor(buffer_size=300, backend=FakeBackend())
+        result = monitor.discover_gpus()
+        assert len(result) == 1
+        assert result[0]["device"] == "card0"
+        assert result[0]["name"] == "Test GPU"
+        assert "driver" not in result[0]
+
+    def test_available_gpus_strips_driver(self):
+        monitor = GpuMonitor(buffer_size=300)
+        monitor._available_gpus = [
+            {"device": "card0", "name": "Test", "driver": "i915"}
+        ]
+        gpus = monitor.available_gpus
+        assert "driver" not in gpus[0]
+
+    def test_discover_gpus_no_backend(self):
+        monitor = GpuMonitor(buffer_size=300)
+        result = monitor.discover_gpus()
+        assert result == []

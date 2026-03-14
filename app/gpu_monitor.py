@@ -1,69 +1,31 @@
 import asyncio
-import json
 import logging
-import os
-import re
-import subprocess
 import time
 from collections import deque
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+from app.backends.base import GpuBackend
 
-SYSFS_GPU_NAME = "/sys/class/drm/card0/device/product_name"
+logger = logging.getLogger(__name__)
 
 
 class GpuMonitor:
-    def __init__(self, buffer_size: int = 300, device: Optional[str] = None):
+    def __init__(
+        self,
+        buffer_size: int = 300,
+        device: Optional[str] = None,
+        backend: Optional[GpuBackend] = None,
+    ):
         self._buffer: deque = deque(maxlen=buffer_size)
         self._buffer_size = buffer_size
         self._current: Optional[dict] = None
         self._subscribers: list = []
-        self._process: Optional[asyncio.subprocess.Process] = None
         self._error: Optional[str] = None
-        self._raw_lines: deque = deque(maxlen=50)
         self._device: Optional[str] = device
         self._available_gpus: list[dict] = []
-        self._run_task: Optional[asyncio.Task] = None
-        self.gpu_name: str = self.detect_gpu_name()
+        self._backend = backend
+        self.gpu_name: str = "GPU"
         self._start_time: float = time.time()
-
-    @staticmethod
-    def detect_gpu_name() -> str:
-        try:
-            with open(SYSFS_GPU_NAME) as f:
-                return f.read().strip()
-        except (FileNotFoundError, PermissionError):
-            pass
-        try:
-            result = subprocess.run(
-                ["lspci"], capture_output=True, text=True, timeout=5
-            )
-            for line in result.stdout.splitlines():
-                if "VGA" in line and "Intel" in line:
-                    parts = line.split(": ", 1)
-                    if len(parts) > 1:
-                        return parts[1].strip()
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
-        return "Intel GPU"
-
-    def parse_json(self, text: str) -> Optional[dict]:
-        text = text.strip().lstrip("[,").rstrip("],")
-        if not text:
-            return None
-        try:
-            data = json.loads(text)
-            if isinstance(data, dict) and "period" in data:
-                return data
-            return None
-        except json.JSONDecodeError:
-            logger.debug("Failed to parse JSON chunk: %s", text[:100])
-            return None
-
-    # Keep for test compatibility
-    def parse_line(self, line: str) -> Optional[dict]:
-        return self.parse_json(line)
 
     @staticmethod
     def _read_cmdline(pid: str) -> Optional[str]:
@@ -87,29 +49,14 @@ class GpuMonitor:
             if pid:
                 client["cmdline"] = self._read_cmdline(pid)
 
-    @staticmethod
-    def list_gpus() -> list[dict]:
-        try:
-            result = subprocess.run(
-                ["intel_gpu_top", "-L"],
-                capture_output=True, text=True, timeout=5,
-            )
-            gpus = []
-            for line in result.stdout.splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                # Format: "card0   Intel foo bar"
-                match = re.match(r"^(\S+)\s+(.+)$", line)
-                if match:
-                    gpus.append({
-                        "device": match.group(1),
-                        "name": match.group(2).strip(),
-                    })
-            return gpus
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            logger.warning("Failed to list GPUs: %s", e)
-            return []
+    def discover_gpus(self) -> list[dict]:
+        if self._backend:
+            self._available_gpus = self._backend.discover_devices()
+            return [
+                {"device": g["device"], "name": g["name"]}
+                for g in self._available_gpus
+            ]
+        return []
 
     @property
     def current_device(self) -> Optional[str]:
@@ -117,25 +64,22 @@ class GpuMonitor:
 
     @property
     def available_gpus(self) -> list[dict]:
-        return self._available_gpus
-
-    def discover_gpus(self) -> list[dict]:
-        self._available_gpus = self.list_gpus()
-        return self._available_gpus
+        return [
+            {"device": g["device"], "name": g["name"]}
+            for g in self._available_gpus
+        ]
 
     async def select_device(self, device: Optional[str]) -> None:
         self._device = device
         self._buffer.clear()
         self._current = None
         self._error = None
-        # Update GPU name for the selected device
+        if self._backend:
+            self._backend.cleanup()
         for gpu in self._available_gpus:
             if gpu["device"] == device:
                 self.gpu_name = gpu["name"]
                 break
-        # Kill current process so run() restarts with new device
-        if self._process and self._process.returncode is None:
-            self._process.kill()
 
     def add_sample(self, data: dict) -> None:
         data["timestamp"] = time.time()
@@ -171,94 +115,32 @@ class GpuMonitor:
         return time.time() - self._start_time
 
     async def run(self) -> None:
+        if not self._backend:
+            self._error = "No GPU backend available"
+            logger.error(self._error)
+            return
+
         while True:
             try:
-                await self._run_gpu_top()
+                device = self._device
+                if not device and self._available_gpus:
+                    device = self._available_gpus[0]["device"]
+                if not device:
+                    self._error = "No GPU device found"
+                    await self._broadcast_status("waiting", self._error)
+                    await asyncio.sleep(5)
+                    continue
+
+                sample = await asyncio.to_thread(
+                    self._backend.read_sample, device
+                )
+                self._error = None
+                self.add_sample(sample)
             except Exception as e:
                 self._error = str(e)
-                logger.error("intel_gpu_top error: %s. Retrying in 5s...", e)
+                logger.error("GPU read error: %s. Retrying in 5s...", e)
                 await self._broadcast_status("waiting", str(e))
-            await asyncio.sleep(5)
-
-    async def _run_gpu_top(self) -> None:
-        cmd = ["intel_gpu_top", "-J", "-s", "1000"]
-        if self._device:
-            cmd.extend(["-d", self._device])
-        logger.info("Starting %s", " ".join(cmd))
-        self._stderr_lines: list[str] = []
-        self._process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-
-        async def drain_stderr():
-            while True:
-                line = await self._process.stderr.readline()
-                if not line:
-                    break
-                text = line.decode("utf-8", errors="replace").strip()
-                if text:
-                    logger.warning("intel_gpu_top stderr: %s", text)
-                    self._stderr_lines.append(text)
-                    # Update error immediately so SSE handler can see it
-                    self._error = f"intel_gpu_top stderr: {text}"
-
-        stderr_task = asyncio.create_task(drain_stderr())
-        json_buf = []
-        brace_depth = 0
-        try:
-            while True:
-                try:
-                    line = await asyncio.wait_for(
-                        self._process.stdout.readline(), timeout=10.0
-                    )
-                except asyncio.TimeoutError:
-                    stderr = "\n".join(self._stderr_lines[-10:])
-                    msg = (
-                        f"intel_gpu_top produced no output for 10s. "
-                        f"stderr: {stderr.strip()}" if stderr.strip()
-                        else "intel_gpu_top produced no output for 10s"
-                    )
-                    logger.error(msg)
-                    self._error = msg
-                    await self._broadcast_status("waiting", msg)
-                    self._process.kill()
-                    break
-                if not line:
-                    break
-                decoded = line.decode("utf-8", errors="replace")
-                self._raw_lines.append(decoded.strip()[:500])
-                # Track brace depth to detect complete JSON objects
-                for ch in decoded:
-                    if ch == '{':
-                        brace_depth += 1
-                    elif ch == '}':
-                        brace_depth -= 1
-                if json_buf or '{' in decoded:
-                    json_buf.append(decoded)
-                if brace_depth == 0 and json_buf:
-                    chunk = "".join(json_buf)
-                    json_buf = []
-                    parsed = self.parse_json(chunk)
-                    if parsed:
-                        self._error = None
-                        self.add_sample(parsed)
-        finally:
-            await self._process.wait()
-            stderr_task.cancel()
-            try:
-                await stderr_task
-            except asyncio.CancelledError:
-                pass
-            stderr = "\n".join(self._stderr_lines[-10:])
-            returncode = self._process.returncode
-            self._error = (
-                f"intel_gpu_top exited (code={returncode}): {stderr.strip()}"
-            )
-            logger.warning(self._error)
-            await self._broadcast_status("waiting", self._error)
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
 
     async def _broadcast_status(self, status: str, error: str) -> None:
         msg = {"status": status, "error": error}
