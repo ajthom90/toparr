@@ -141,6 +141,15 @@ Aggregate per-process engine busy% by summing across all clients per engine clas
 - API layer (`main.py`) barely changes — still talks to GpuMonitor with same interface
 - Fix pre-existing bug: `POST /api/gpus/select` returns tuple `(dict, 400)` instead of proper HTTP 400 — fix to use `JSONResponse(status_code=400)`
 
+### What gets removed from GpuMonitor
+
+The following are entirely replaced by the backend architecture:
+- `_run_gpu_top()` method and all subprocess/streaming JSON infrastructure (~100 lines)
+- `parse_json()` / `parse_line()` methods (no longer parsing intel_gpu_top output)
+- `list_gpus()` static method (replaced by `backend.discover_devices()`)
+- `discover_gpus()` wrapper (replaced by direct backend call)
+- `detect_gpu_name()` static method (moves into backend's `discover_devices()`, per-device not hardcoded to card0)
+
 ### Error handling
 
 - If sysfs files are unreadable (e.g., no hwmon for integrated GPU): return `None` for that field, not an error
@@ -149,8 +158,8 @@ Aggregate per-process engine busy% by summing across all clients per engine clas
 
 ### Frontend changes (minimal)
 
-- Read `sample.gpu_busy` directly instead of computing `100 - sample.rc6.value`
-- Hide or remove interrupts display
+- Read `sample.gpu_busy` directly (a plain float, not an object) instead of computing `100 - sample.rc6.value`
+- Remove the interrupts sub-element from the GPU Busy card (both HTML element and JS rendering code)
 - Card title changes from "GPU Busy (RC6 inverse)" to "GPU Busy"
 - Add `Compute` engine color to `ENGINE_COLORS` map (for xe `ccs` engine)
 - Everything else (engines, clients, sparklines, modal, GPU selector) works unchanged since data shape is preserved
@@ -190,6 +199,9 @@ Aggregate per-process engine busy% by summing across all clients per engine clas
 
 ### Before refactoring
 Write tests capturing the current behavioral contract — API responses, data shapes, GpuMonitor processing.
+
+### Test fixtures
+The old-format `SAMPLE_GPU_JSON` (with `rc6`, `interrupts`, `unit` fields, string client values) is replaced by new-format fixtures matching the normalized data model. Old fixtures are removed since the `intel_gpu_top` JSON parser is being deleted entirely.
 
 ### Test layers
 
