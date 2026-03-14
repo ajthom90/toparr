@@ -61,3 +61,47 @@ async def test_index_serves_html():
         resp = await client.get("/")
     assert resp.status_code == 200
     assert "text/html" in resp.headers["content-type"]
+
+
+@pytest.mark.asyncio
+async def test_gpus_endpoint(monitor):
+    from app.main import app
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/gpus")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "gpus" in data
+    assert "current_device" in data
+    assert isinstance(data["gpus"], list)
+
+
+@pytest.mark.asyncio
+async def test_debug_endpoint(monitor):
+    from app.main import app
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/debug")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "gpu_name" in data
+    assert "uptime_seconds" in data
+    assert "error" in data
+    assert "buffer_size" in data
+
+
+@pytest.mark.asyncio
+async def test_status_response_has_expected_fields(monitor):
+    from app.main import app
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/api/status")
+    data = resp.json()
+    current = data["current"]
+    assert current is not None
+    assert "engines" in current
+    assert len(current["engines"]) > 0
+    assert "clients" in current
+    assert "frequency" in current
+    assert "actual" in current["frequency"]
+    assert "requested" in current["frequency"]
