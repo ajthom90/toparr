@@ -6,7 +6,6 @@ from tests.conftest import SAMPLE_GPU_JSON
 
 @pytest.fixture
 def monitor():
-    """Create a GpuMonitor with sample data, without starting subprocess."""
     from app.gpu_monitor import GpuMonitor
     import app.main
 
@@ -20,7 +19,6 @@ def monitor():
 @pytest.mark.asyncio
 async def test_status_endpoint(monitor):
     from app.main import app
-
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/api/status")
@@ -39,10 +37,8 @@ async def test_status_endpoint(monitor):
 async def test_status_endpoint_empty():
     from app.gpu_monitor import GpuMonitor
     import app.main
-
     app.main.monitor = GpuMonitor(buffer_size=300)
     from app.main import app
-
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/api/status")
@@ -55,7 +51,6 @@ async def test_status_endpoint_empty():
 @pytest.mark.asyncio
 async def test_index_serves_html():
     from app.main import app
-
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/")
@@ -105,3 +100,4 @@ async def test_status_response_has_expected_fields(monitor):
     assert "frequency" in current
     assert "actual" in current["frequency"]
     assert "requested" in current["frequency"]
+    assert "gpu_busy" in current
