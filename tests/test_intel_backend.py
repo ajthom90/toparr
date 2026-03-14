@@ -361,3 +361,102 @@ class TestEngineNameMapping:
     def test_unknown_engine_passthrough(self, backend):
         assert backend._map_engine_name("unknown-engine", "i915") == "unknown-engine"
         assert backend._map_engine_name("unknown-engine", "xe") == "unknown-engine"
+
+
+# ── Task 7 — Utilization delta computation ───────────────────────────
+
+class TestComputeUtilizationI915:
+    def test_i915_delta_50_percent(self, backend):
+        """500ms busy in 1s wall time = 50%."""
+        prev = {
+            "7": {"engines": {"render": {"ns": 0}}}
+        }
+        curr = {
+            "7": {"engines": {"render": {"ns": 500_000_000}}}
+        }
+        result = backend._compute_utilization(prev, curr, 1.0, "i915")
+        assert result["7"]["engines"]["render"] == pytest.approx(50.0)
+
+    def test_i915_multiple_engines(self, backend):
+        prev = {
+            "7": {"engines": {
+                "render": {"ns": 1_000_000_000},
+                "video": {"ns": 0},
+            }}
+        }
+        curr = {
+            "7": {"engines": {
+                "render": {"ns": 2_000_000_000},  # +1s in 2s = 50%
+                "video": {"ns": 400_000_000},      # +0.4s in 2s = 20%
+            }}
+        }
+        result = backend._compute_utilization(prev, curr, 2.0, "i915")
+        assert result["7"]["engines"]["render"] == pytest.approx(50.0)
+        assert result["7"]["engines"]["video"] == pytest.approx(20.0)
+
+
+class TestComputeUtilizationXe:
+    def test_xe_delta_10_percent(self, backend):
+        """100 cycle delta / 1000 total_cycle delta = 10%."""
+        prev = {
+            "42": {"engines": {"rcs": {"cycles": 0, "total_cycles": 0}}}
+        }
+        curr = {
+            "42": {"engines": {"rcs": {"cycles": 100, "total_cycles": 1000}}}
+        }
+        result = backend._compute_utilization(prev, curr, 1.0, "xe")
+        assert result["42"]["engines"]["rcs"] == pytest.approx(10.0)
+
+    def test_xe_zero_total_cycles_delta(self, backend):
+        """If total_cycles delta is 0, utilization should be 0%."""
+        prev = {
+            "42": {"engines": {"rcs": {"cycles": 100, "total_cycles": 500}}}
+        }
+        curr = {
+            "42": {"engines": {"rcs": {"cycles": 100, "total_cycles": 500}}}
+        }
+        result = backend._compute_utilization(prev, curr, 1.0, "xe")
+        assert result["42"]["engines"]["rcs"] == 0.0
+
+
+class TestComputeUtilizationEdgeCases:
+    def test_new_client_gets_zero(self, backend):
+        """A client not in prev gets 0% for all engines."""
+        prev = {}
+        curr = {
+            "99": {"engines": {"render": {"ns": 500_000_000}}}
+        }
+        result = backend._compute_utilization(prev, curr, 1.0, "i915")
+        assert result["99"]["engines"]["render"] == 0.0
+
+    def test_capped_at_100(self, backend):
+        """Utilization must not exceed 100%."""
+        prev = {
+            "7": {"engines": {"render": {"ns": 0}}}
+        }
+        curr = {
+            "7": {"engines": {"render": {"ns": 2_000_000_000}}}
+        }
+        # 2s busy in 1s wall time => would be 200%, capped to 100%
+        result = backend._compute_utilization(prev, curr, 1.0, "i915")
+        assert result["7"]["engines"]["render"] == 100.0
+
+    def test_disappeared_client_excluded(self, backend):
+        """A client in prev but not curr should not appear in output."""
+        prev = {
+            "7": {"engines": {"render": {"ns": 100}}}
+        }
+        curr = {}
+        result = backend._compute_utilization(prev, curr, 1.0, "i915")
+        assert "7" not in result
+
+    def test_negative_delta_clamped_to_zero(self, backend):
+        """Counter reset can cause negative delta — should clamp to 0%."""
+        prev = {
+            "7": {"engines": {"render": {"ns": 1_000_000_000}}}
+        }
+        curr = {
+            "7": {"engines": {"render": {"ns": 500_000_000}}}
+        }
+        result = backend._compute_utilization(prev, curr, 1.0, "i915")
+        assert result["7"]["engines"]["render"] == 0.0

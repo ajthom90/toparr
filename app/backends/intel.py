@@ -216,6 +216,65 @@ class IntelBackend(GpuBackend):
             return self.XE_ENGINE_MAP.get(name, name)
         return self.I915_ENGINE_MAP.get(name, name)
 
+    # ── Utilization computation ─────────────────────────────────────
+
+    def _compute_utilization(
+        self,
+        prev: dict,
+        curr: dict,
+        wall_time_s: float,
+        driver: str,
+    ) -> dict:
+        """Compute per-engine utilization percentages from counter deltas.
+
+        *prev* and *curr* are dicts keyed by client_id, each with an
+        ``"engines"`` sub-dict mapping engine names to counter dicts.
+
+        Returns ``{client_id: {"engines": {engine_name: busy_pct}}}``
+        for every client_id present in *curr*.
+        """
+        result: dict = {}
+        for cid, cdata in curr.items():
+            engines_out: dict = {}
+            pdata = prev.get(cid)
+            for engine, counters in cdata.get("engines", {}).items():
+                if pdata is None:
+                    # New client — no previous data, report 0%
+                    engines_out[engine] = 0.0
+                    continue
+
+                prev_counters = pdata.get("engines", {}).get(engine)
+                if prev_counters is None:
+                    engines_out[engine] = 0.0
+                    continue
+
+                if driver == "xe":
+                    busy_pct = self._xe_busy_pct(prev_counters, counters)
+                else:
+                    busy_pct = self._i915_busy_pct(
+                        prev_counters, counters, wall_time_s,
+                    )
+
+                engines_out[engine] = max(0.0, min(busy_pct, 100.0))
+
+            result[cid] = {"engines": engines_out}
+        return result
+
+    @staticmethod
+    def _i915_busy_pct(prev: dict, curr: dict, wall_time_s: float) -> float:
+        delta_ns = curr.get("ns", 0) - prev.get("ns", 0)
+        if wall_time_s <= 0:
+            return 0.0
+        return delta_ns / (wall_time_s * 1e9) * 100.0
+
+    @staticmethod
+    def _xe_busy_pct(prev: dict, curr: dict) -> float:
+        delta_cycles = curr.get("cycles", 0) - prev.get("cycles", 0)
+        delta_total = curr.get("total_cycles", 0) - prev.get("total_cycles", 0)
+        if delta_total <= 0:
+            return 0.0
+        return delta_cycles / delta_total * 100.0
+
     # ── Public API ───────────────────────────────────────────────────
 
     def discover_devices(self) -> list[dict]:
