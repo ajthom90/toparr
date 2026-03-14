@@ -275,6 +275,62 @@ class IntelBackend(GpuBackend):
             return 0.0
         return delta_cycles / delta_total * 100.0
 
+    # ── fdinfo scanning ──────────────────────────────────────────────
+
+    def _scan_fdinfo(self, proc_path: str, driver: str) -> list[dict]:
+        """Scan /proc/*/fdinfo/* for DRM clients matching *driver*.
+
+        Returns a list of dicts, each with keys: client_id, engines,
+        memory, pid, name.  Deduplicates by drm-client-id (first wins).
+        """
+        seen_client_ids: dict[str, dict] = {}
+        try:
+            entries = os.listdir(proc_path)
+        except OSError:
+            return []
+
+        for pid_name in entries:
+            if not pid_name.isdigit():
+                continue
+            fdinfo_dir = os.path.join(proc_path, pid_name, "fdinfo")
+            try:
+                fd_entries = os.listdir(fdinfo_dir)
+            except OSError:
+                continue
+
+            for fd_name in fd_entries:
+                fd_path = os.path.join(fdinfo_dir, fd_name)
+                try:
+                    with open(fd_path) as f:
+                        content = f.read()
+                except OSError:
+                    continue
+
+                if "drm-driver:" not in content:
+                    continue
+
+                parsed = self._parse_fdinfo(content, driver)
+                if parsed is None:
+                    continue
+
+                client_id = parsed["client_id"]
+                if client_id in seen_client_ids:
+                    continue
+
+                # Read process name from comm
+                comm_path = os.path.join(proc_path, pid_name, "comm")
+                try:
+                    with open(comm_path) as f:
+                        name = f.read().strip()
+                except OSError:
+                    name = "unknown"
+
+                parsed["pid"] = int(pid_name)
+                parsed["name"] = name
+                seen_client_ids[client_id] = parsed
+
+        return list(seen_client_ids.values())
+
     # ── Public API ───────────────────────────────────────────────────
 
     def discover_devices(self) -> list[dict]:
@@ -311,7 +367,96 @@ class IntelBackend(GpuBackend):
         return devices
 
     def read_sample(self, device: str) -> dict:
-        raise NotImplementedError
+        now = time.time()
+        driver = self._detect_driver(device) or "i915"
+        wall_time_s = now - self._prev_time if self._prev_time and self._prev_time > 0 else 1.0
+
+        # Frequency
+        frequency = self._read_frequency(device, driver)
+
+        # RC6 / GPU busy
+        rc6_ms = self._read_rc6_ms(device, driver)
+        gpu_busy = None
+        prev_rc6 = self._prev_rc6_ms.get(device)
+        if rc6_ms is not None and prev_rc6 is not None and wall_time_s > 0:
+            delta_rc6_ms = rc6_ms - prev_rc6
+            rc6_pct = (delta_rc6_ms / (wall_time_s * 1000)) * 100
+            gpu_busy = max(0.0, min(100.0, 100.0 - rc6_pct))
+        self._prev_rc6_ms[device] = rc6_ms
+
+        # Power
+        energy_uj = self._read_energy_uj(device)
+        power_watts = None
+        prev_energy = self._prev_energy_uj.get(device)
+        if energy_uj is not None and prev_energy is not None and wall_time_s > 0:
+            delta_uj = energy_uj - prev_energy
+            power_watts = delta_uj / (wall_time_s * 1_000_000)
+        self._prev_energy_uj[device] = energy_uj
+
+        # Per-process fdinfo
+        raw_clients = self._scan_fdinfo(self._proc_path, driver)
+
+        # Build counter snapshot for delta computation
+        curr_counters: dict = {}
+        for client in raw_clients:
+            curr_counters[client["client_id"]] = {"engines": client["engines"]}
+
+        # Compute utilization deltas
+        util = self._compute_utilization(self._prev_counters, curr_counters, wall_time_s, driver)
+        self._prev_counters = curr_counters
+        self._prev_time = now
+
+        # Device-level engine utilization (aggregate from clients)
+        engine_totals: dict[str, float] = {}
+        for client_id, client_util in util.items():
+            for engine, busy_pct in client_util["engines"].items():
+                display_name = self._map_engine_name(engine, driver)
+                key = f"{display_name}/0"
+                engine_totals[key] = engine_totals.get(key, 0.0) + busy_pct
+        engines = {key: {"busy": min(total, 100.0)} for key, total in engine_totals.items()}
+
+        # GPU busy fallback: derive from max engine utilization if no RC6
+        if gpu_busy is None and engines:
+            gpu_busy = max(e["busy"] for e in engines.values())
+        elif gpu_busy is None:
+            gpu_busy = 0.0
+
+        # Build clients dict
+        clients: dict = {}
+        for client in raw_clients:
+            client_id = client["client_id"]
+            client_util = util.get(client_id, {}).get("engines", {})
+            engine_classes: dict = {}
+            for engine, busy_pct in client_util.items():
+                display_name = self._map_engine_name(engine, driver)
+                engine_classes[display_name] = {"busy": round(busy_pct, 1)}
+
+            memory: dict = {}
+            if client.get("memory"):
+                memory = {"system": client["memory"].get("system", {})}
+                for region, data in client["memory"].items():
+                    if region != "system":
+                        memory[region] = data
+
+            client_entry: dict = {
+                "pid": client["pid"],
+                "name": client["name"],
+                "engine-classes": engine_classes,
+            }
+            if memory:
+                client_entry["memory"] = memory
+            clients[client_id] = client_entry
+
+        power = {"GPU": round(power_watts, 1)} if power_watts is not None else None
+
+        return {
+            "period": {"duration": wall_time_s * 1000},
+            "frequency": frequency,
+            "gpu_busy": round(gpu_busy, 1),
+            "power": power,
+            "engines": engines,
+            "clients": clients,
+        }
 
     def cleanup(self) -> None:
         """Clear all internal state."""

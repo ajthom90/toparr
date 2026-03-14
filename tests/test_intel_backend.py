@@ -460,3 +460,131 @@ class TestComputeUtilizationEdgeCases:
         }
         result = backend._compute_utilization(prev, curr, 1.0, "i915")
         assert result["7"]["engines"]["render"] == 0.0
+
+
+# ── Task 8 — fdinfo scanning and read_sample ─────────────────────────
+
+def _make_proc_fdinfo(proc_path, pid, fd, fdinfo_content, comm="test\n"):
+    """Create a fake /proc/{pid}/fdinfo/{fd} file and comm file."""
+    pid_dir = proc_path / str(pid)
+    fdinfo_dir = pid_dir / "fdinfo"
+    fdinfo_dir.mkdir(parents=True, exist_ok=True)
+    (fdinfo_dir / str(fd)).write_text(fdinfo_content)
+    comm_path = pid_dir / "comm"
+    if not comm_path.exists():
+        comm_path.write_text(comm)
+
+
+class TestFdinfoScan:
+    def test_scan_fdinfo_finds_drm_clients(self, tmp_path, backend):
+        _make_proc_fdinfo(tmp_path, 1234, 5, I915_FDINFO, comm="ffmpeg\n")
+        results = backend._scan_fdinfo(str(tmp_path), "i915")
+        assert len(results) == 1
+        r = results[0]
+        assert r["pid"] == 1234
+        assert r["name"] == "ffmpeg"
+        assert r["client_id"] == "7"
+        assert "render" in r["engines"]
+        assert r["engines"]["render"]["ns"] == 9288864723
+
+    def test_scan_fdinfo_skips_wrong_driver(self, tmp_path, backend):
+        _make_proc_fdinfo(tmp_path, 1234, 5, I915_FDINFO, comm="ffmpeg\n")
+        results = backend._scan_fdinfo(str(tmp_path), "xe")
+        assert len(results) == 0
+
+    def test_scan_fdinfo_handles_missing_proc(self, tmp_path, backend):
+        results = backend._scan_fdinfo(str(tmp_path / "nonexistent"), "i915")
+        assert results == []
+
+    def test_scan_fdinfo_deduplicates_by_client_id(self, tmp_path, backend):
+        # Same client_id in two different fds under the same pid
+        _make_proc_fdinfo(tmp_path, 1234, 5, I915_FDINFO, comm="ffmpeg\n")
+        _make_proc_fdinfo(tmp_path, 1234, 6, I915_FDINFO, comm="ffmpeg\n")
+        results = backend._scan_fdinfo(str(tmp_path), "i915")
+        assert len(results) == 1
+
+
+class TestReadSample:
+    def _setup_i915_sysfs(self, tmp_path):
+        """Create a full sysfs tree for an i915 card."""
+        card = _make_card(tmp_path / "drm", "card0", driver="i915",
+                          product_name="Intel UHD 770")
+        # Frequency files
+        (card / "gt_act_freq_mhz").write_text("1350\n")
+        (card / "gt_cur_freq_mhz").write_text("1500\n")
+        # RC6
+        rc6_dir = card / "gt" / "gt0"
+        rc6_dir.mkdir(parents=True)
+        (rc6_dir / "rc6_residency_ms").write_text("5000\n")
+        # Energy
+        hwmon = card / "device" / "hwmon" / "hwmon0"
+        hwmon.mkdir(parents=True)
+        (hwmon / "energy1_input").write_text("10000000\n")
+        return card
+
+    def test_read_sample_i915(self, tmp_path, backend):
+        self._setup_i915_sysfs(tmp_path)
+        backend._drm_base = str(tmp_path / "drm")
+
+        # Create proc with fdinfo
+        proc = tmp_path / "proc"
+        _make_proc_fdinfo(proc, 1000, 3, I915_FDINFO, comm="ffmpeg\n")
+        backend._proc_path = str(proc)
+
+        sample = backend.read_sample("card0")
+
+        # Check all required keys
+        assert "period" in sample
+        assert "frequency" in sample
+        assert "gpu_busy" in sample
+        assert "power" in sample
+        assert "engines" in sample
+        assert "clients" in sample
+
+        # Frequency values
+        assert sample["frequency"]["actual"] == 1350.0
+        assert sample["frequency"]["requested"] == 1500.0
+
+        # On first sample, no previous data → gpu_busy from RC6 is None
+        # (no prev_rc6), so falls back to engine max (all 0.0 on first sample)
+        assert sample["gpu_busy"] == 0.0
+
+        # First sample: no previous energy → power is None
+        assert sample["power"] is None
+
+        # Clients should have the ffmpeg entry
+        assert len(sample["clients"]) == 1
+        client = list(sample["clients"].values())[0]
+        assert client["pid"] == 1000
+        assert client["name"] == "ffmpeg"
+
+    def test_read_sample_xe_gpu_busy_fallback(self, tmp_path, backend):
+        """xe GPU without gtidle dir → gpu_busy falls back to 0.0 on first sample."""
+        card = _make_card(tmp_path / "drm", "card0", driver="xe",
+                          product_name="Intel Arc A770")
+        # xe frequency files
+        freq_dir = card / "device" / "tile0" / "gt0" / "freq0"
+        freq_dir.mkdir(parents=True)
+        (freq_dir / "act_freq").write_text("2100\n")
+        (freq_dir / "cur_freq").write_text("2400\n")
+        # No gtidle directory → rc6 will be None
+
+        backend._drm_base = str(tmp_path / "drm")
+        backend._proc_path = str(tmp_path / "proc")
+        # No proc entries either → no clients
+
+        sample = backend.read_sample("card0")
+        assert sample["gpu_busy"] == 0.0
+
+    def test_read_sample_structure(self, tmp_path, backend):
+        """Verify all required keys are present in the returned dict."""
+        _make_card(tmp_path / "drm", "card0", driver="i915")
+        backend._drm_base = str(tmp_path / "drm")
+        backend._proc_path = str(tmp_path / "proc")
+
+        sample = backend.read_sample("card0")
+        required_keys = {"period", "frequency", "gpu_busy", "power", "engines", "clients"}
+        assert required_keys == set(sample.keys())
+        assert "duration" in sample["period"]
+        assert "actual" in sample["frequency"]
+        assert "requested" in sample["frequency"]
