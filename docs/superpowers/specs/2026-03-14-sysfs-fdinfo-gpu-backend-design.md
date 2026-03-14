@@ -17,7 +17,7 @@ The backend produces a normalized, vendor-agnostic sample dict:
     "period": {"duration": 1000.0},                         # sampling interval ms
     "frequency": {"actual": 1300.0, "requested": 1350.0},  # MHz
     "gpu_busy": 67.5,                                       # % (RC6 or engine agg)
-    "power": {"gpu": 8.2},                                  # watts (None if unavailable)
+    "power": {"GPU": 8.2},                                  # watts (None if unavailable)
     "engines": {
         "Render/3D/0": {"busy": 42.0},
         "Video/0": {"busy": 87.0},
@@ -29,23 +29,30 @@ The backend produces a normalized, vendor-agnostic sample dict:
             "pid": "4821",
             "name": "Plex Transcoder",
             "engine-classes": {
-                "Render/3D": {"busy": "38.0"},
-                "Video": {"busy": "72.0"},
+                "Render/3D": {"busy": 38.0},
+                "Video": {"busy": 72.0},
             },
             "memory": {
-                "system": {"total": "232411136", "resident": "122638336", ...}
+                "system": {"total": 232411136, "resident": 122638336, ...}
             }
         }
     }
 }
 ```
 
+**Note on types:** Client engine-class `busy` values and memory values are numeric (float/int), not strings. The old `intel_gpu_top` format used strings for these; the new format normalizes them. The frontend already parses these with `parseFloat()`/`parseInt()` so this is backward compatible.
+
+**Note on `unit` fields:** The old format included `"unit": "%"` etc. on every sub-object. These are dropped — the frontend never reads them and units are implicit in the field semantics.
+
 ### Changes from current intel_gpu_top format
 
 - `rc6` and `interrupts` fields removed — replaced by top-level `gpu_busy` percentage
 - `imc-bandwidth` removed (i915-PMU-specific, no sysfs equivalent)
-- `power.Package` removed (only `power.gpu` kept)
+- `power.Package` removed (only `power.GPU` kept — key stays uppercase for frontend compatibility)
+- `unit` fields removed from all sub-objects (frontend never reads them)
 - Engine `sema`/`wait` fields removed (fdinfo only provides busy time)
+- Client engine-class `busy` values normalized to floats (were strings)
+- Client memory values normalized to integers (were strings)
 - xe engine names mapped to familiar names: `rcs` -> `Render/3D`, `vcs` -> `Video`, `vecs` -> `VideoEnhance`, `bcs` -> `Blitter`, `ccs` -> `Compute`
 
 ## Architecture
@@ -73,11 +80,11 @@ Three layers:
 
 ### GpuBackend ABC
 
-Three methods:
+Three methods (all synchronous — called via `asyncio.to_thread()` from the orchestrator to avoid blocking the event loop):
 
-- `discover_devices()` — returns list of `{"device": "card0", "name": "Intel Arc B580", "driver": "xe"}`
-- `read_sample(device) -> dict` — returns one normalized sample dict
-- `cleanup()` — release resources on shutdown
+- `discover_devices()` — returns list of `{"device": "card0", "name": "Intel Arc B580", "driver": "xe"}`. The `driver` field is internal metadata; the API only exposes `device` and `name`.
+- `read_sample(device) -> dict` — returns one normalized sample dict. Synchronous because it reads many small files from `/proc` and `/sys`.
+- `cleanup()` — clears internal delta state (previous fdinfo counters). No file descriptors are held open between calls.
 
 ### IntelBackend
 
@@ -90,12 +97,12 @@ Handles both i915 and xe drivers internally.
 **GPU name detection:** Read `/sys/class/drm/cardN/device/product_name` (preferred) or fall back to `lspci`.
 
 **Frequency:**
-- i915: read `gt_cur_freq_mhz` and `gt_max_freq_mhz` from `/sys/class/drm/cardN/`
-- xe: read `cur_freq` and `max_freq` from `/sys/class/drm/cardN/device/tile0/gt0/freq0/`
+- i915: `gt_cur_freq_mhz` = requested frequency, `gt_act_freq_mhz` = actual frequency from `/sys/class/drm/cardN/`
+- xe: `cur_freq` = requested frequency (set by GuC PC), `act_freq` = actual frequency (decided by PCODE) from `/sys/class/drm/cardN/device/tile0/gt0/freq0/`
 
 **RC6 / GPU busy:**
 - i915: read `gt/gt0/rc6_residency_ms` from sysfs, compute delta over interval -> RC6%, then `gpu_busy = 100 - rc6%`
-- xe: attempt similar sysfs path; if unavailable, derive from aggregate engine utilization (max engine busy%)
+- xe: attempt `device/tile0/gt0/gtidle/idle_residency_ms` if available; if not, derive from aggregate engine utilization using `max(engine_busy%)` across all engines. Max is used because it represents the most loaded engine — sum would overcount parallel engine usage, and average would undercount single-engine workloads.
 
 **Power:**
 - Find hwmon device associated with the GPU PCI device
@@ -122,21 +129,30 @@ Handles both i915 and xe drivers internally.
 | `ccs`   | `Compute`   |
 
 **Device-level engine utilization:**
-Aggregate per-process engine busy% by summing across all clients per engine class. Cap at 100%.
+Aggregate per-process engine busy% by summing across all clients per engine class, capped at 100%. This is an approximation — time-sliced processes can legitimately exceed 100% when summed, so capping is necessary. This replaces the i915 PMU-based device-level counters that `intel_gpu_top` used.
 
 ### GpuMonitor (updated)
 
 - On startup: auto-detect backend (try Intel, future: Nvidia, AMD)
 - Calls `backend.discover_devices()` to populate GPU list
-- Async loop: `backend.read_sample()` every 1s -> `add_sample()` -> broadcast to SSE subscribers
+- Async loop: calls `backend.read_sample()` via `asyncio.to_thread()` every 1s -> `add_sample()` -> broadcast to SSE subscribers
 - Retains: ring buffer, subscriber management, cmdline enrichment, error handling, device selection
+- On `select_device()`: calls `backend.cleanup()` to reset delta state before switching
 - API layer (`main.py`) barely changes — still talks to GpuMonitor with same interface
+- Fix pre-existing bug: `POST /api/gpus/select` returns tuple `(dict, 400)` instead of proper HTTP 400 — fix to use `JSONResponse(status_code=400)`
+
+### Error handling
+
+- If sysfs files are unreadable (e.g., no hwmon for integrated GPU): return `None` for that field, not an error
+- If fdinfo scan partially fails (PID vanishes mid-scan): skip that process, return data for remaining clients
+- If GPU device disappears entirely: `read_sample()` raises an exception, caught by GpuMonitor which broadcasts error status and retries
 
 ### Frontend changes (minimal)
 
 - Read `sample.gpu_busy` directly instead of computing `100 - sample.rc6.value`
 - Hide or remove interrupts display
 - Card title changes from "GPU Busy (RC6 inverse)" to "GPU Busy"
+- Add `Compute` engine color to `ENGINE_COLORS` map (for xe `ccs` engine)
 - Everything else (engines, clients, sparklines, modal, GPU selector) works unchanged since data shape is preserved
 - HTML title/header: "GPU Monitor" instead of "Intel GPU Monitor"
 
