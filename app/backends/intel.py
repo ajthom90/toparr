@@ -325,7 +325,7 @@ class IntelBackend(GpuBackend):
                 except OSError:
                     name = "unknown"
 
-                parsed["pid"] = int(pid_name)
+                parsed["pid"] = pid_name
                 parsed["name"] = name
                 seen_client_ids[client_id] = parsed
 

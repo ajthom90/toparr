@@ -2,6 +2,8 @@ import json
 import time
 from unittest.mock import patch, mock_open
 
+import pytest
+
 from tests.conftest import SAMPLE_GPU_JSON, SAMPLE_GPU_JSON_MINIMAL
 
 from app.gpu_monitor import GpuMonitor
@@ -101,3 +103,39 @@ class TestDeviceManagement:
         monitor = GpuMonitor(buffer_size=300)
         result = monitor.discover_gpus()
         assert result == []
+
+    @pytest.mark.asyncio
+    async def test_select_device_resets_state(self):
+        from app.backends.base import GpuBackend
+
+        class FakeBackend(GpuBackend):
+            def __init__(self):
+                self.cleanup_called = False
+
+            def discover_devices(self):
+                return [
+                    {"device": "card0", "name": "GPU A", "driver": "i915"},
+                    {"device": "card1", "name": "GPU B", "driver": "xe"},
+                ]
+
+            def read_sample(self, device):
+                return {}
+
+            def cleanup(self):
+                self.cleanup_called = True
+
+        backend = FakeBackend()
+        monitor = GpuMonitor(buffer_size=300, backend=backend)
+        monitor.discover_gpus()
+        monitor.add_sample(SAMPLE_GPU_JSON.copy())
+        assert monitor.get_current() is not None
+        assert len(monitor.get_history()) == 1
+
+        await monitor.select_device("card1")
+
+        assert monitor.get_current() is None
+        assert monitor.get_history() == []
+        assert monitor.get_error() is None
+        assert monitor.current_device == "card1"
+        assert monitor.gpu_name == "GPU B"
+        assert backend.cleanup_called

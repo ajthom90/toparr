@@ -481,7 +481,7 @@ class TestFdinfoScan:
         results = backend._scan_fdinfo(str(tmp_path), "i915")
         assert len(results) == 1
         r = results[0]
-        assert r["pid"] == 1234
+        assert r["pid"] == "1234"
         assert r["name"] == "ffmpeg"
         assert r["client_id"] == "7"
         assert "render" in r["engines"]
@@ -555,7 +555,7 @@ class TestReadSample:
         # Clients should have the ffmpeg entry
         assert len(sample["clients"]) == 1
         client = list(sample["clients"].values())[0]
-        assert client["pid"] == 1000
+        assert client["pid"] == "1000"
         assert client["name"] == "ffmpeg"
 
     def test_read_sample_xe_gpu_busy_fallback(self, tmp_path, backend):
