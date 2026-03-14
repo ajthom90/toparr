@@ -81,6 +81,59 @@ class IntelBackend(GpuBackend):
 
         return "Intel GPU"
 
+    # ── Sysfs reads: frequency, RC6, power ─────────────────────────
+
+    def _read_frequency(self, card: str, driver: str) -> dict:
+        """Read actual and requested GPU frequency from sysfs."""
+        if driver == "xe":
+            base = os.path.join(
+                self._drm_base, card, "device", "tile0", "gt0", "freq0"
+            )
+            actual = self._read_sysfs(os.path.join(base, "act_freq"))
+            requested = self._read_sysfs(os.path.join(base, "cur_freq"))
+        else:  # i915
+            base = os.path.join(self._drm_base, card)
+            actual = self._read_sysfs(os.path.join(base, "gt_act_freq_mhz"))
+            requested = self._read_sysfs(os.path.join(base, "gt_cur_freq_mhz"))
+        return {
+            "actual": float(actual) if actual else 0.0,
+            "requested": float(requested) if requested else 0.0,
+        }
+
+    def _read_rc6_ms(self, card: str, driver: str) -> Optional[float]:
+        """Read RC6/idle residency in milliseconds."""
+        if driver == "xe":
+            path = os.path.join(
+                self._drm_base, card,
+                "device", "tile0", "gt0", "gtidle", "idle_residency_ms",
+            )
+        else:  # i915
+            path = os.path.join(
+                self._drm_base, card, "gt", "gt0", "rc6_residency_ms",
+            )
+        val = self._read_sysfs(path)
+        return float(val) if val is not None else None
+
+    def _find_hwmon(self, card: str) -> Optional[str]:
+        """Find the hwmon directory under the card's device."""
+        hwmon_base = os.path.join(self._drm_base, card, "device", "hwmon")
+        if not os.path.isdir(hwmon_base):
+            return None
+        entries = sorted(os.listdir(hwmon_base))
+        for entry in entries:
+            candidate = os.path.join(hwmon_base, entry)
+            if os.path.isdir(candidate):
+                return candidate
+        return None
+
+    def _read_energy_uj(self, card: str) -> Optional[float]:
+        """Read energy counter (microjoules) from hwmon."""
+        hwmon = self._find_hwmon(card)
+        if hwmon is None:
+            return None
+        val = self._read_sysfs(os.path.join(hwmon, "energy1_input"))
+        return float(val) if val is not None else None
+
     # ── Public API ───────────────────────────────────────────────────
 
     def discover_devices(self) -> list[dict]:

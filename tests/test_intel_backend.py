@@ -140,3 +140,85 @@ class TestCleanup:
         assert backend._prev_rc6_ms == {}
         assert backend._prev_energy_uj == {}
         assert backend._driver_cache == {}
+
+
+# ── Task 4 — Sysfs reads: frequency, RC6, power ─────────────────────
+
+class TestReadFrequency:
+    def test_i915_frequency(self, tmp_path, backend):
+        backend._drm_base = str(tmp_path)
+        card = tmp_path / "card0"
+        card.mkdir(parents=True)
+        (card / "gt_act_freq_mhz").write_text("1350\n")
+        (card / "gt_cur_freq_mhz").write_text("1500\n")
+        freq = backend._read_frequency("card0", "i915")
+        assert freq == {"actual": 1350.0, "requested": 1500.0}
+
+    def test_xe_frequency(self, tmp_path, backend):
+        backend._drm_base = str(tmp_path)
+        freq_dir = tmp_path / "card0" / "device" / "tile0" / "gt0" / "freq0"
+        freq_dir.mkdir(parents=True)
+        (freq_dir / "act_freq").write_text("2100\n")
+        (freq_dir / "cur_freq").write_text("2400\n")
+        freq = backend._read_frequency("card0", "xe")
+        assert freq == {"actual": 2100.0, "requested": 2400.0}
+
+    def test_missing_frequency_returns_zeros(self, tmp_path, backend):
+        backend._drm_base = str(tmp_path)
+        (tmp_path / "card0").mkdir(parents=True)
+        freq = backend._read_frequency("card0", "i915")
+        assert freq == {"actual": 0.0, "requested": 0.0}
+
+    def test_missing_xe_frequency_returns_zeros(self, tmp_path, backend):
+        backend._drm_base = str(tmp_path)
+        (tmp_path / "card0").mkdir(parents=True)
+        freq = backend._read_frequency("card0", "xe")
+        assert freq == {"actual": 0.0, "requested": 0.0}
+
+
+class TestReadRC6:
+    def test_i915_rc6(self, tmp_path, backend):
+        backend._drm_base = str(tmp_path)
+        rc6_dir = tmp_path / "card0" / "gt" / "gt0"
+        rc6_dir.mkdir(parents=True)
+        (rc6_dir / "rc6_residency_ms").write_text("12345\n")
+        result = backend._read_rc6_ms("card0", "i915")
+        assert result == 12345.0
+
+    def test_xe_idle_residency(self, tmp_path, backend):
+        backend._drm_base = str(tmp_path)
+        idle_dir = tmp_path / "card0" / "device" / "tile0" / "gt0" / "gtidle"
+        idle_dir.mkdir(parents=True)
+        (idle_dir / "idle_residency_ms").write_text("98765\n")
+        result = backend._read_rc6_ms("card0", "xe")
+        assert result == 98765.0
+
+    def test_missing_rc6_returns_none(self, tmp_path, backend):
+        backend._drm_base = str(tmp_path)
+        (tmp_path / "card0").mkdir(parents=True)
+        assert backend._read_rc6_ms("card0", "i915") is None
+        assert backend._read_rc6_ms("card0", "xe") is None
+
+
+class TestHwmonEnergy:
+    def test_find_hwmon_and_read_energy(self, tmp_path, backend):
+        backend._drm_base = str(tmp_path)
+        hwmon = tmp_path / "card0" / "device" / "hwmon" / "hwmon3"
+        hwmon.mkdir(parents=True)
+        (hwmon / "energy1_input").write_text("5000000\n")
+        hwmon_path = backend._find_hwmon("card0")
+        assert hwmon_path is not None
+        energy = backend._read_energy_uj("card0")
+        assert energy == 5000000.0
+
+    def test_no_hwmon_returns_none(self, tmp_path, backend):
+        backend._drm_base = str(tmp_path)
+        (tmp_path / "card0" / "device").mkdir(parents=True)
+        assert backend._find_hwmon("card0") is None
+
+    def test_no_energy_file_returns_none(self, tmp_path, backend):
+        backend._drm_base = str(tmp_path)
+        hwmon = tmp_path / "card0" / "device" / "hwmon" / "hwmon0"
+        hwmon.mkdir(parents=True)
+        # hwmon exists but no energy1_input file
+        assert backend._read_energy_uj("card0") is None
