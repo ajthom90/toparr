@@ -134,6 +134,88 @@ class IntelBackend(GpuBackend):
         val = self._read_sysfs(os.path.join(hwmon, "energy1_input"))
         return float(val) if val is not None else None
 
+    # ── fdinfo parsing ─────────────────────────────────────────────
+
+    _MEMORY_STATS = frozenset({
+        "total", "shared", "resident", "active", "purgeable",
+    })
+
+    def _parse_fdinfo(self, content: str, driver: str) -> Optional[dict]:
+        """Parse a single fdinfo file.
+
+        Returns ``{"client_id": str, "engines": {...}, "memory": {...}}``
+        or *None* if the file does not belong to *driver*.
+        """
+        engines: dict = {}
+        memory: dict = {}
+        client_id: Optional[str] = None
+        found_driver = False
+
+        for line in content.splitlines():
+            if ":\t" not in line:
+                continue
+            key, _, value = line.partition(":\t")
+            value = value.strip()
+
+            if key == "drm-driver":
+                if value != driver:
+                    return None
+                found_driver = True
+                continue
+
+            if key == "drm-client-id":
+                client_id = value
+                continue
+
+            # ── i915 engine lines: drm-engine-<name>: <value> ns ─────
+            if key.startswith("drm-engine-") and not key.startswith("drm-engine-capacity-"):
+                engine_name = key[len("drm-engine-"):]
+                ns_str = value.replace(" ns", "")
+                engines.setdefault(engine_name, {})["ns"] = int(ns_str)
+                continue
+
+            # ── xe cycle lines ───────────────────────────────────────
+            if key.startswith("drm-total-cycles-"):
+                engine_name = key[len("drm-total-cycles-"):]
+                engines.setdefault(engine_name, {})["total_cycles"] = int(value)
+                continue
+
+            if key.startswith("drm-cycles-"):
+                engine_name = key[len("drm-cycles-"):]
+                engines.setdefault(engine_name, {})["cycles"] = int(value)
+                continue
+
+            if key.startswith("drm-engine-capacity-"):
+                engine_name = key[len("drm-engine-capacity-"):]
+                engines.setdefault(engine_name, {})["capacity"] = int(value)
+                continue
+
+            # ── memory lines: drm-{stat}-{region}: <value> ──────────
+            if key.startswith("drm-"):
+                rest = key[4:]  # strip "drm-"
+                # Try to split into stat-region
+                for stat in self._MEMORY_STATS:
+                    prefix = stat + "-"
+                    if rest.startswith(prefix):
+                        region = rest[len(prefix):]
+                        memory.setdefault(region, {})[stat] = int(value)
+                        break
+
+        if not found_driver:
+            return None
+
+        return {
+            "client_id": client_id,
+            "engines": engines,
+            "memory": memory,
+        }
+
+    def _map_engine_name(self, name: str, driver: str) -> str:
+        """Map a raw engine name to a human-readable name."""
+        if driver == "xe":
+            return self.XE_ENGINE_MAP.get(name, name)
+        return self.I915_ENGINE_MAP.get(name, name)
+
     # ── Public API ───────────────────────────────────────────────────
 
     def discover_devices(self) -> list[dict]:

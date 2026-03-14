@@ -222,3 +222,142 @@ class TestHwmonEnergy:
         hwmon.mkdir(parents=True)
         # hwmon exists but no energy1_input file
         assert backend._read_energy_uj("card0") is None
+
+
+# ── Tasks 5 & 6 — fdinfo parsing and engine name mapping ────────────
+
+I915_FDINFO = """\
+pos:\t0
+flags:\t02100002
+mnt_id:\t15
+ino:\t1234
+drm-driver:\ti915
+drm-pdev:\t0000:00:02.0
+drm-client-id:\t7
+drm-engine-render:\t9288864723 ns
+drm-engine-copy:\t2035071108 ns
+drm-engine-video:\t52567609040 ns
+drm-engine-video-enhance:\t0 ns
+"""
+
+I915_FDINFO_WITH_MEMORY = """\
+pos:\t0
+flags:\t02100002
+drm-driver:\ti915
+drm-client-id:\t12
+drm-engine-render:\t1000000 ns
+drm-total-system:\t232411136
+drm-shared-system:\t0
+drm-resident-system:\t122638336
+drm-active-system:\t4018176
+drm-purgeable-system:\t634880
+"""
+
+XE_FDINFO = """\
+pos:\t0
+flags:\t02100002
+drm-driver:\txe
+drm-client-id:\t42
+drm-cycles-rcs:\t28257900
+drm-total-cycles-rcs:\t7655183225
+drm-cycles-bcs:\t0
+drm-total-cycles-bcs:\t7655183225
+drm-cycles-vcs:\t0
+drm-total-cycles-vcs:\t7655183225
+drm-engine-capacity-vcs:\t2
+drm-cycles-vecs:\t0
+drm-total-cycles-vecs:\t7655183225
+drm-engine-capacity-vecs:\t2
+drm-cycles-ccs:\t0
+drm-total-cycles-ccs:\t7655183225
+drm-engine-capacity-ccs:\t4
+drm-total-system:\t1048576
+drm-shared-system:\t0
+drm-resident-system:\t524288
+drm-active-system:\t262144
+drm-purgeable-system:\t0
+drm-total-vram0:\t67108864
+drm-shared-vram0:\t0
+drm-resident-vram0:\t33554432
+"""
+
+
+class TestParseFdinfoI915:
+    def test_parse_i915_engines(self, backend):
+        result = backend._parse_fdinfo(I915_FDINFO, "i915")
+        assert result is not None
+        assert result["client_id"] == "7"
+        engines = result["engines"]
+        assert engines["render"]["ns"] == 9288864723
+        assert engines["copy"]["ns"] == 2035071108
+        assert engines["video"]["ns"] == 52567609040
+        assert engines["video-enhance"]["ns"] == 0
+
+    def test_parse_i915_memory(self, backend):
+        result = backend._parse_fdinfo(I915_FDINFO_WITH_MEMORY, "i915")
+        assert result is not None
+        mem = result["memory"]
+        assert mem["system"]["total"] == 232411136
+        assert mem["system"]["shared"] == 0
+        assert mem["system"]["resident"] == 122638336
+        assert mem["system"]["active"] == 4018176
+        assert mem["system"]["purgeable"] == 634880
+
+    def test_wrong_driver_returns_none(self, backend):
+        result = backend._parse_fdinfo(I915_FDINFO, "xe")
+        assert result is None
+
+    def test_non_drm_fdinfo_returns_none(self, backend):
+        content = "pos:\t0\nflags:\t02100002\n"
+        result = backend._parse_fdinfo(content, "i915")
+        assert result is None
+
+
+class TestParseFdinfoXe:
+    def test_parse_xe_cycles(self, backend):
+        result = backend._parse_fdinfo(XE_FDINFO, "xe")
+        assert result is not None
+        assert result["client_id"] == "42"
+        engines = result["engines"]
+        assert engines["rcs"]["cycles"] == 28257900
+        assert engines["rcs"]["total_cycles"] == 7655183225
+        assert engines["bcs"]["cycles"] == 0
+        assert engines["bcs"]["total_cycles"] == 7655183225
+        assert engines["vcs"]["capacity"] == 2
+        assert engines["ccs"]["capacity"] == 4
+
+    def test_parse_xe_memory(self, backend):
+        result = backend._parse_fdinfo(XE_FDINFO, "xe")
+        assert result is not None
+        mem = result["memory"]
+        assert mem["system"]["total"] == 1048576
+        assert mem["system"]["resident"] == 524288
+        assert mem["vram0"]["total"] == 67108864
+        assert mem["vram0"]["resident"] == 33554432
+
+    def test_total_cycles_not_parsed_as_memory(self, backend):
+        """drm-total-cycles-rcs must NOT end up in memory dict."""
+        result = backend._parse_fdinfo(XE_FDINFO, "xe")
+        assert result is not None
+        # "cycles-rcs" should not appear as a memory region
+        for region in result["memory"]:
+            assert "cycles" not in region
+
+
+class TestEngineNameMapping:
+    def test_i915_mapping(self, backend):
+        assert backend._map_engine_name("render", "i915") == "Render/3D"
+        assert backend._map_engine_name("video", "i915") == "Video"
+        assert backend._map_engine_name("video-enhance", "i915") == "VideoEnhance"
+        assert backend._map_engine_name("copy", "i915") == "Blitter"
+
+    def test_xe_mapping(self, backend):
+        assert backend._map_engine_name("rcs", "xe") == "Render/3D"
+        assert backend._map_engine_name("vcs", "xe") == "Video"
+        assert backend._map_engine_name("vecs", "xe") == "VideoEnhance"
+        assert backend._map_engine_name("bcs", "xe") == "Blitter"
+        assert backend._map_engine_name("ccs", "xe") == "Compute"
+
+    def test_unknown_engine_passthrough(self, backend):
+        assert backend._map_engine_name("unknown-engine", "i915") == "unknown-engine"
+        assert backend._map_engine_name("unknown-engine", "xe") == "unknown-engine"
