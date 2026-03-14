@@ -8,6 +8,7 @@
     "Video": "#34d399",
     "VideoEnhance": "#a855f7",
     "Blitter": "#fbbf24",
+    "Compute": "#f472b6",
   };
 
   // --- State ---
@@ -35,7 +36,7 @@
     try {
       var resp = await fetch("/api/status");
       var data = await resp.json();
-      gpuName = data.gpu_name || "Intel GPU";
+      gpuName = data.gpu_name || "GPU";
       $("gpu-name").textContent = gpuName;
       startTime = Date.now() - data.uptime_seconds * 1000;
       if (data.tdp_watts) tdpWatts = data.tdp_watts;
@@ -148,15 +149,12 @@
   }
 
   function renderGpuBusy(sample) {
-    var rc6 = sample.rc6 ? sample.rc6.value : 0;
-    var busy = Math.max(0, Math.min(100, 100 - rc6));
+    var busy = sample.gpu_busy || 0;
+    busy = Math.max(0, Math.min(100, busy));
     var circumference = 213.6;
     var offset = circumference - (busy / 100) * circumference;
     $("gpu-busy-arc").style.strokeDashoffset = offset;
     $("gpu-busy-pct").textContent = busy.toFixed(0) + "%";
-
-    var irq = sample.interrupts ? sample.interrupts.count : 0;
-    $("interrupts-val").textContent = Math.round(irq).toLocaleString();
   }
 
   function renderFrequency(sample) {
