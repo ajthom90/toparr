@@ -303,6 +303,19 @@ class TestParseFdinfoI915:
         assert mem["system"]["active"] == 4018176
         assert mem["system"]["purgeable"] == 634880
 
+    def test_parse_memory_with_kib_units(self, backend):
+        """Handles memory values with KiB unit suffix from real kernels."""
+        content = (
+            "drm-driver:\ti915\n"
+            "drm-client-id:\t99\n"
+            "drm-total-system:\t145440 KiB\n"
+            "drm-resident-system:\t72000 KiB\n"
+        )
+        result = backend._parse_fdinfo(content, "i915")
+        assert result is not None
+        assert result["memory"]["system"]["total"] == 145440 * 1024
+        assert result["memory"]["system"]["resident"] == 72000 * 1024
+
     def test_wrong_driver_returns_none(self, backend):
         result = backend._parse_fdinfo(I915_FDINFO, "xe")
         assert result is None
@@ -342,6 +355,27 @@ class TestParseFdinfoXe:
         # "cycles-rcs" should not appear as a memory region
         for region in result["memory"]:
             assert "cycles" not in region
+
+
+class TestMemoryValueParsing:
+    def test_raw_bytes(self):
+        assert IntelBackend._parse_memory_value("232411136") == 232411136
+
+    def test_kib_unit(self):
+        assert IntelBackend._parse_memory_value("145440 KiB") == 145440 * 1024
+
+    def test_mib_unit(self):
+        assert IntelBackend._parse_memory_value("128 MiB") == 128 * 1024 * 1024
+
+    def test_gib_unit(self):
+        assert IntelBackend._parse_memory_value("2 GiB") == 2 * 1024 * 1024 * 1024
+
+    def test_empty_string(self):
+        assert IntelBackend._parse_memory_value("") == 0
+
+    def test_unknown_unit(self):
+        # Unknown unit treated as multiplier 1
+        assert IntelBackend._parse_memory_value("1000 bytes") == 1000
 
 
 class TestEngineNameMapping:

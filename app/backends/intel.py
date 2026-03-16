@@ -140,6 +140,28 @@ class IntelBackend(GpuBackend):
         "total", "shared", "resident", "active", "purgeable",
     })
 
+    _MEMORY_UNITS = {"KiB": 1024, "MiB": 1024**2, "GiB": 1024**3}
+
+    @staticmethod
+    def _parse_memory_value(value: str) -> int:
+        """Parse a memory value that may have a unit suffix.
+
+        Handles: '232411136', '145440 KiB', '128 MiB', etc.
+        Returns value in bytes.
+        """
+        parts = value.split()
+        if not parts:
+            return 0
+        try:
+            num = int(parts[0])
+        except ValueError:
+            return 0
+        if len(parts) >= 2:
+            unit = parts[1]
+            multiplier = IntelBackend._MEMORY_UNITS.get(unit, 1)
+            return num * multiplier
+        return num
+
     def _parse_fdinfo(self, content: str, driver: str) -> Optional[dict]:
         """Parse a single fdinfo file.
 
@@ -198,7 +220,9 @@ class IntelBackend(GpuBackend):
                     prefix = stat + "-"
                     if rest.startswith(prefix):
                         region = rest[len(prefix):]
-                        memory.setdefault(region, {})[stat] = int(value)
+                        memory.setdefault(region, {})[stat] = (
+                            self._parse_memory_value(value)
+                        )
                         break
 
         if not found_driver:
