@@ -11,7 +11,7 @@
   <!-- Header -->
   <div class="header">
     <div>
-      <h1>Intel GPU Monitor</h1>
+      <h1>GPU Monitor</h1>
       <div class="gpu-name-row">
         <span class="gpu-name" id="gpu-name">Detecting GPU...</span>
         <select class="gpu-select" id="gpu-select" style="display:none"></select>
@@ -31,7 +31,7 @@
   <!-- Top row: gauges -->
   <div class="grid-3">
     <div class="card">
-      <div class="card-title">GPU Busy (RC6 inverse)</div>
+      <div class="card-title">GPU Busy</div>
       <div class="gauge-container">
         <div class="gauge">
           <svg viewBox="0 0 80 80">
@@ -40,10 +40,6 @@
               stroke-dasharray="213.6" stroke-dashoffset="213.6"/>
           </svg>
           <div class="gauge-text" id="gpu-busy-pct">--%</div>
-        </div>
-        <div class="gauge-details">
-          <div class="label">Interrupts/s</div>
-          <div class="value" id="interrupts-val">--</div>
         </div>
       </div>
     </div>
@@ -119,7 +115,7 @@
 
   <!-- Footer -->
   <div class="footer">
-    Intel GPU Monitor — <span id="footer-status">Connecting...</span> — Uptime: <span id="uptime">--</span>
+    GPU Monitor — <span id="footer-status">Connecting...</span> — Uptime: <span id="uptime">--</span>
   </div>
 
   <!-- Client detail modal -->

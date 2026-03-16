@@ -2,26 +2,30 @@ import asyncio
 import json
 import logging
 import os
-import subprocess
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
+from app.backends.intel import IntelBackend
 from app.gpu_monitor import GpuMonitor
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 tdp = int(os.environ.get("GPU_TDP_WATTS", "60"))
-monitor = GpuMonitor(buffer_size=300)
+
+backend = IntelBackend()
+monitor = GpuMonitor(buffer_size=300, backend=backend)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    monitor.discover_gpus()
+    gpus = monitor.discover_gpus()
+    if gpus:
+        monitor.gpu_name = gpus[0]["name"]
     task = asyncio.create_task(monitor.run())
     yield
     task.cancel()
@@ -67,10 +71,12 @@ async def gpus():
 async def select_gpu(request: Request):
     body = await request.json()
     device = body.get("device")
-    # Validate device is in discovered list
     valid_devices = [g["device"] for g in monitor.available_gpus]
     if device is not None and device not in valid_devices:
-        return {"error": f"Unknown device: {device}"}, 400
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Unknown device: {device}"},
+        )
     await monitor.select_device(device)
     return {
         "status": "ok",
@@ -83,7 +89,6 @@ async def select_gpu(request: Request):
 async def debug():
     current = monitor.get_current()
 
-    # Check container permissions relevant to per-client tracking
     checks = {}
     checks["pid_namespace"] = "host" if os.path.exists("/proc/1/cmdline") else "container"
     try:
@@ -94,7 +99,6 @@ async def debug():
     except (FileNotFoundError, PermissionError) as e:
         checks["pid1_cmdline"] = str(e)
 
-    # Check if we can read fdinfo for any process
     fdinfo_sample = None
     try:
         for pid_dir in os.listdir("/proc"):
@@ -121,7 +125,6 @@ async def debug():
         fdinfo_sample = {"error": str(e)}
     checks["fdinfo_access"] = fdinfo_sample
 
-    # Check capabilities
     try:
         with open("/proc/self/status") as f:
             for line in f:
@@ -131,23 +134,10 @@ async def debug():
     except (FileNotFoundError, PermissionError):
         checks["capabilities"] = "unreadable"
 
-    # Check intel_gpu_top version
-    try:
-        result = subprocess.run(
-            ["intel_gpu_top", "--help"],
-            capture_output=True, text=True, timeout=5,
-        )
-        checks["intel_gpu_top_help"] = (
-            result.stdout[:500] + result.stderr[:500]
-        ).strip()
-    except Exception as e:
-        checks["intel_gpu_top_help"] = str(e)
-
     return {
         "gpu_name": monitor.gpu_name,
         "uptime_seconds": monitor.uptime_seconds,
         "error": monitor.get_error(),
-        "raw_lines": list(monitor._raw_lines)[-5:],
         "has_clients": bool(
             current and current.get("clients")
             and len(current["clients"]) > 0
