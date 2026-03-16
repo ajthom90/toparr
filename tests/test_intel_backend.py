@@ -464,12 +464,19 @@ class TestComputeUtilizationEdgeCases:
 
 # ── Task 8 — fdinfo scanning and read_sample ─────────────────────────
 
-def _make_proc_fdinfo(proc_path, pid, fd, fdinfo_content, comm="test\n"):
-    """Create a fake /proc/{pid}/fdinfo/{fd} file and comm file."""
+def _make_proc_fdinfo(proc_path, pid, fd, fdinfo_content, comm="test\n",
+                      fd_target="/dev/dri/renderD128"):
+    """Create a fake /proc/{pid}/fdinfo/{fd} file, fd symlink, and comm file."""
     pid_dir = proc_path / str(pid)
     fdinfo_dir = pid_dir / "fdinfo"
     fdinfo_dir.mkdir(parents=True, exist_ok=True)
     (fdinfo_dir / str(fd)).write_text(fdinfo_content)
+    # Create /proc/{pid}/fd/{fd} symlink pointing to a DRM device
+    fd_dir = pid_dir / "fd"
+    fd_dir.mkdir(parents=True, exist_ok=True)
+    fd_link = fd_dir / str(fd)
+    if not fd_link.exists():
+        fd_link.symlink_to(fd_target)
     comm_path = pid_dir / "comm"
     if not comm_path.exists():
         comm_path.write_text(comm)
@@ -490,6 +497,13 @@ class TestFdinfoScan:
     def test_scan_fdinfo_skips_wrong_driver(self, tmp_path, backend):
         _make_proc_fdinfo(tmp_path, 1234, 5, I915_FDINFO, comm="ffmpeg\n")
         results = backend._scan_fdinfo(str(tmp_path), "xe")
+        assert len(results) == 0
+
+    def test_scan_fdinfo_skips_non_drm_fds(self, tmp_path, backend):
+        """Fds pointing to non-DRM files are skipped (fast path)."""
+        _make_proc_fdinfo(tmp_path, 1234, 5, I915_FDINFO, comm="ffmpeg\n",
+                          fd_target="/dev/null")
+        results = backend._scan_fdinfo(str(tmp_path), "i915")
         assert len(results) == 0
 
     def test_scan_fdinfo_handles_missing_proc(self, tmp_path, backend):

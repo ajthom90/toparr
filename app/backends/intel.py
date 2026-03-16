@@ -298,7 +298,18 @@ class IntelBackend(GpuBackend):
             except OSError:
                 continue
 
+            fd_dir = os.path.join(proc_path, pid_name, "fd")
             for fd_name in fd_entries:
+                # Fast path: check if this fd points to a DRM device
+                # before reading the full fdinfo file. readlink is a
+                # single syscall vs open+read+close for fdinfo.
+                try:
+                    target = os.readlink(os.path.join(fd_dir, fd_name))
+                except OSError:
+                    continue
+                if "/dev/dri/" not in target:
+                    continue
+
                 fd_path = os.path.join(fdinfo_dir, fd_name)
                 try:
                     with open(fd_path) as f:
