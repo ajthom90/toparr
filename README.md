@@ -17,7 +17,7 @@ Real-time Intel GPU monitoring dashboard in Docker. Wraps `intel_gpu_top` (from 
 
 ## Tested Setup
 
-This application has been developed and tested on the following specific configuration:
+This application has been developed and tested on the following configurations:
 
 | Component | Details |
 |---|---|
@@ -27,9 +27,13 @@ This application has been developed and tested on the following specific configu
 | **Kernel** | Linux 6.12.x (production+truenas) |
 | **Driver** | i915 |
 
+Intel Arc A-series discrete GPUs (Alchemist) have also been tested and confirmed working with the i915 driver — see [#4](https://github.com/ajthom90/toparr/issues/4) for details.
+
+> **Note:** Intel Battlemage (B-series) discrete GPUs are **not currently supported**. If you have a Battlemage card and are able to test, PRs are welcome!
+
 > **Disclaimer:** This software is provided as-is and may not work on all hardware configurations, kernels, or Linux distributions. In particular:
 >
-> - **Only Intel integrated GPUs using the i915 driver have been tested.** Discrete Intel Arc GPUs (using the xe driver) have not been tested and may require modifications.
+> - **Intel integrated GPUs and Arc A-series (Alchemist) GPUs using the i915 driver are supported.** Battlemage GPUs and the xe driver have not been tested and may require modifications.
 > - **Kernel compatibility varies.** Different kernel versions may have different debugfs layouts, fdinfo formats, or perf counter access methods. The per-client tracking feature requires kernel 5.19+ with fdinfo support.
 > - **Container runtime differences** between Docker, Podman, and other runtimes may affect device access, capability handling, or PID namespace behavior.
 > - **NAS and appliance OSes** (TrueNAS, Unraid, Synology, etc.) may have custom kernels with non-standard module configurations.
@@ -159,8 +163,9 @@ Tests run without a real GPU — they test JSON parsing, sample buffering, and t
 
 Contributions are welcome! This project has only been tested on one specific hardware/OS combination (see [Tested Setup](#tested-setup)), so there are many opportunities to help:
 
-- **Hardware support** — test on different Intel GPUs (Arc, older generations, different Alder/Raptor Lake SKUs) and report or fix compatibility issues
-- **Driver support** — add support for the `xe` driver used by Intel Arc discrete GPUs
+- **Hardware support** — test on different Intel GPUs (older generations, different Alder/Raptor Lake SKUs) and report or fix compatibility issues
+- **Battlemage support** — Battlemage (B-series) GPUs are untested; if you have one, help us add support!
+- **Driver support** — add support for the `xe` driver used by newer Intel discrete GPUs
 - **Kernel compatibility** — test on different kernel versions and distributions, fix any debugfs/fdinfo format differences
 - **Container runtimes** — verify and fix behavior on Podman, LXC, or other runtimes
 - **NAS platforms** — test on Unraid, Synology, or other NAS distributions
