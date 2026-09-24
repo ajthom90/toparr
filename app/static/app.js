@@ -172,7 +172,20 @@
       $("power-bar").style.width = "0%";
       return;
     }
-    var gpu = power.GPU || 0;
+    var gpu = power.GPU;
+    if (gpu == null) {
+      // No GPU-domain counter (typical for iGPUs): fall back to package power.
+      var pkg = power.PKG;
+      if (pkg == null) {
+        $("power-gpu").textContent = "N/A";
+        $("power-bar").style.width = "0%";
+        return;
+      }
+      $("power-gpu").textContent = pkg.toFixed(1);
+      $("power-tdp-label").textContent = "PKG (CPU package)";
+      $("power-bar").style.width = "0%";
+      return;
+    }
     $("power-gpu").textContent = gpu.toFixed(1);
     var pct = Math.min(100, (gpu / tdpWatts) * 100);
     $("power-bar").style.width = pct + "%";

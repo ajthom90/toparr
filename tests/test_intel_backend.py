@@ -1,6 +1,7 @@
 """Tests for IntelBackend — sysfs/fdinfo-based GPU monitoring."""
 import os
 import textwrap
+import time
 
 import pytest
 
@@ -636,3 +637,130 @@ class TestReadSample:
         assert "duration" in sample["period"]
         assert "actual" in sample["frequency"]
         assert "requested" in sample["frequency"]
+
+
+# ── RAPL package-power fallback ──────────────────────────────────────
+
+
+def _make_powercap(tmp_path, energy_uj=None, base="intel-rapl:0", name="package"):
+    """Create (or update) a fake powercap domain under *tmp_path*."""
+    dom = tmp_path / base
+    dom.mkdir(parents=True, exist_ok=True)
+    (dom / "name").write_text(name + "\n")
+    if energy_uj is not None:
+        (dom / "energy_uj").write_text(str(energy_uj) + "\n")
+    return dom
+
+
+class TestRaplEnergy:
+    def test_read_package_domain(self, tmp_path, backend):
+        _make_powercap(tmp_path, energy_uj=2000000)
+        backend._powercap_base = str(tmp_path)
+        assert backend._read_rapl_energy_uj("card0") == 2000000.0
+
+    def test_skips_subdomains(self, tmp_path, backend):
+        # Subdomains (core, uncore) contain two colons — must be ignored
+        _make_powercap(tmp_path, energy_uj=2000000)
+        sub = tmp_path / "intel-rapl:0:0"
+        sub.mkdir(parents=True)
+        (sub / "name").write_text("core\n")
+        (sub / "energy_uj").write_text("999\n")
+        backend._powercap_base = str(tmp_path)
+        assert backend._read_rapl_energy_uj("card0") == 2000000.0
+
+    def test_non_package_domain_ignored(self, tmp_path, backend):
+        _make_powercap(tmp_path, energy_uj=5, name="dram")
+        backend._powercap_base = str(tmp_path)
+        assert backend._read_rapl_energy_uj("card0") is None
+
+    def test_package_domain_with_suffix(self, tmp_path, backend):
+        # Newer kernels name the package domain "package-N" (e.g. "package-0")
+        _make_powercap(tmp_path, energy_uj=3000000, name="package-0")
+        backend._powercap_base = str(tmp_path)
+        assert backend._read_rapl_energy_uj("card0") == 3000000.0
+
+    def test_missing_powercap_base_returns_none(self, tmp_path, backend):
+        backend._powercap_base = str(tmp_path / "nope")
+        assert backend._read_rapl_energy_uj("card0") is None
+
+    def test_missing_energy_file_returns_none(self, tmp_path, backend):
+        _make_powercap(tmp_path, energy_uj=None)
+        backend._powercap_base = str(tmp_path)
+        assert backend._read_rapl_energy_uj("card0") is None
+
+
+class TestReadSampleRaplPower:
+    def _setup_igpu_sysfs(self, tmp_path):
+        """i915 card with NO hwmon energy counter (typical iGPU: UHD 730/770)."""
+        card = _make_card(tmp_path / "drm", "card0", driver="i915",
+                          product_name="Intel UHD 730")
+        (card / "gt_act_freq_mhz").write_text("0\n")
+        (card / "gt_cur_freq_mhz").write_text("1517\n")
+        rc6_dir = card / "gt" / "gt0"
+        rc6_dir.mkdir(parents=True)
+        (rc6_dir / "rc6_residency_ms").write_text("1000\n")
+        return card
+
+    def test_rapl_fallback_when_no_hwmon(self, tmp_path, backend):
+        self._setup_igpu_sysfs(tmp_path)
+        _make_powercap(tmp_path, energy_uj=1000000)
+        backend._drm_base = str(tmp_path / "drm")
+        backend._powercap_base = str(tmp_path)
+        backend._proc_path = str(tmp_path / "proc")
+
+        backend.read_sample("card0")  # first sample seeds prev counter
+
+        # Second sample: +1 J over ~1 s -> 1.0 W package power
+        _make_powercap(tmp_path, energy_uj=2000000)
+        backend._prev_time = time.time() - 1.0
+        sample = backend.read_sample("card0")
+        assert sample["power"] == {"GPU": None, "PKG": 1.0}
+
+    def test_rapl_counter_wraparound(self, tmp_path, backend):
+        self._setup_igpu_sysfs(tmp_path)
+        _make_powercap(tmp_path, energy_uj=(2 ** 32 - 1000000))
+        backend._drm_base = str(tmp_path / "drm")
+        backend._powercap_base = str(tmp_path)
+        backend._proc_path = str(tmp_path / "proc")
+
+        backend.read_sample("card0")
+
+        # Counter wraps: prev = 2^32 - 1e6, curr = 1e6 -> delta 2e6 uJ -> 2.0 W
+        _make_powercap(tmp_path, energy_uj=1000000)
+        backend._prev_time = time.time() - 1.0
+        sample = backend.read_sample("card0")
+        assert sample["power"] == {"GPU": None, "PKG": 2.0}
+
+    def test_hwmon_takes_precedence(self, tmp_path, backend):
+        # Card WITH hwmon energy: power reports GPU only, no PKG key
+        card = self._setup_igpu_sysfs(tmp_path)
+        hwmon = card / "device" / "hwmon" / "hwmon0"
+        hwmon.mkdir(parents=True)
+        (hwmon / "energy1_input").write_text("1000000\n")
+        _make_powercap(tmp_path, energy_uj=1000000)
+        backend._drm_base = str(tmp_path / "drm")
+        backend._powercap_base = str(tmp_path)
+        backend._proc_path = str(tmp_path / "proc")
+
+        backend.read_sample("card0")
+        (hwmon / "energy1_input").write_text("2000000\n")
+        backend._prev_time = time.time() - 1.0
+        sample = backend.read_sample("card0")
+        assert sample["power"] == {"GPU": 1.0}
+        assert "PKG" not in sample["power"]
+
+    def test_no_power_sources_stays_none(self, tmp_path, backend):
+        self._setup_igpu_sysfs(tmp_path)
+        backend._drm_base = str(tmp_path / "drm")
+        backend._powercap_base = str(tmp_path / "no-powercap")
+        backend._proc_path = str(tmp_path / "proc")
+
+        backend.read_sample("card0")
+        backend._prev_time = time.time() - 1.0
+        sample = backend.read_sample("card0")
+        assert sample["power"] is None
+
+    def test_cleanup_clears_rapl_state(self, backend):
+        backend._prev_rapl_uj = {"card0": 123.0}
+        backend.cleanup()
+        assert backend._prev_rapl_uj == {}

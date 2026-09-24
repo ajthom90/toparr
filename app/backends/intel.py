@@ -33,7 +33,9 @@ class IntelBackend(GpuBackend):
         self._prev_time: Optional[float] = None
         self._prev_rc6_ms: dict = {}
         self._prev_energy_uj: dict = {}
+        self._prev_rapl_uj: dict = {}
         self._driver_cache: dict = {}
+        self._powercap_base: str = "/sys/class/powercap"
 
     # ── Sysfs helpers ────────────────────────────────────────────────
 
@@ -132,6 +134,42 @@ class IntelBackend(GpuBackend):
         if hwmon is None:
             return None
         val = self._read_sysfs(os.path.join(hwmon, "energy1_input"))
+        return float(val) if val is not None else None
+
+    def _find_rapl_package_domain(self) -> Optional[str]:
+        """Find the RAPL package domain (e.g. intel-rapl:0) in powercap sysfs."""
+        if not os.path.isdir(self._powercap_base):
+            return None
+        try:
+            entries = sorted(os.listdir(self._powercap_base))
+        except OSError:
+            return None
+        for entry in entries:
+            # Package domains are "intel-rapl:N"; subdomains (core, uncore)
+            # are "intel-rapl:N:M" and must be skipped.
+            if not entry.startswith("intel-rapl:") or entry.count(":") != 1:
+                continue
+            candidate = os.path.join(self._powercap_base, entry)
+            name = self._read_sysfs(os.path.join(candidate, "name"))
+            # Older kernels name the package domain "package"; newer
+            # kernels use "package-N" (verified live on 6.18/ADL-S).
+            if name is not None and name.startswith("package"):
+                return candidate
+        return None
+
+    def _read_rapl_energy_uj(self, card: str) -> Optional[float]:
+        """Read package energy counter (microjoules) from Intel RAPL.
+
+        Fallback for GPUs without a hwmon energy counter (typical for
+        integrated GPUs). This measures the whole CPU package, not the
+        GPU alone. The counter is restricted in containers — it is only
+        readable with elevated privileges (e.g. ``--privileged``);
+        returns None when unreadable.
+        """
+        domain = self._find_rapl_package_domain()
+        if domain is None:
+            return None
+        val = self._read_sysfs(os.path.join(domain, "energy_uj"))
         return float(val) if val is not None else None
 
     # ── fdinfo parsing ─────────────────────────────────────────────
@@ -419,14 +457,28 @@ class IntelBackend(GpuBackend):
             gpu_busy = max(0.0, min(100.0, 100.0 - rc6_pct))
         self._prev_rc6_ms[device] = rc6_ms
 
-        # Power
+        # Power (GPU-domain hwmon energy counter, wrap-safe)
         energy_uj = self._read_energy_uj(device)
         power_watts = None
         prev_energy = self._prev_energy_uj.get(device)
         if energy_uj is not None and prev_energy is not None and wall_time_s > 0:
             delta_uj = energy_uj - prev_energy
+            if delta_uj < 0:
+                delta_uj += 2 ** 32  # counter wraparound
             power_watts = delta_uj / (wall_time_s * 1_000_000)
         self._prev_energy_uj[device] = energy_uj
+
+        # Package power fallback (RAPL) for GPUs without hwmon energy
+        pkg_watts = None
+        if energy_uj is None:
+            rapl_uj = self._read_rapl_energy_uj(device)
+            prev_rapl = self._prev_rapl_uj.get(device)
+            if rapl_uj is not None and prev_rapl is not None and wall_time_s > 0:
+                delta_uj = rapl_uj - prev_rapl
+                if delta_uj < 0:
+                    delta_uj += 2 ** 32  # counter wraparound
+                pkg_watts = delta_uj / (wall_time_s * 1_000_000)
+            self._prev_rapl_uj[device] = rapl_uj
 
         # Per-process fdinfo
         raw_clients = self._scan_fdinfo(self._proc_path, driver)
@@ -482,7 +534,14 @@ class IntelBackend(GpuBackend):
                 client_entry["memory"] = memory
             clients[client_id] = client_entry
 
-        power = {"GPU": round(power_watts, 1)} if power_watts is not None else None
+        if power_watts is not None:
+            power = {"GPU": round(power_watts, 1)}
+        elif pkg_watts is not None:
+            # No GPU-domain counter available (iGPU): report package power,
+            # clearly labeled so it is never mistaken for GPU-only power.
+            power = {"GPU": None, "PKG": round(pkg_watts, 1)}
+        else:
+            power = None
 
         return {
             "period": {"duration": wall_time_s * 1000},
@@ -499,4 +558,5 @@ class IntelBackend(GpuBackend):
         self._prev_time = None
         self._prev_rc6_ms = {}
         self._prev_energy_uj = {}
+        self._prev_rapl_uj = {}
         self._driver_cache = {}
