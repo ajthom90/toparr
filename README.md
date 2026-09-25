@@ -71,6 +71,8 @@ services:
     container_name: toparr
     restart: unless-stopped
     pid: host
+    # Uncomment to enable package-power readings on iGPUs (see "Power readings"):
+    # privileged: true
     devices:
       - /dev/dri:/dev/dri
     cap_add:
@@ -107,6 +109,12 @@ Open **http://localhost:8080** in your browser.
 | Variable | Default | Description |
 |---|---|---|
 | `GPU_TDP_WATTS` | `60` | GPU TDP in watts (used for the power gauge scale) |
+
+### Power readings
+
+- **Discrete GPUs** report GPU-domain power via the DRM `hwmon` energy counter, shown as a percentage of `GPU_TDP_WATTS`.
+- **Integrated GPUs** (UHD 630/730/770, etc.) expose no GPU-domain energy counter, so Toparr falls back to the Intel RAPL *package* domain and reports it as `power.PKG` (rendered as "PKG (CPU package)" in the UI). This is CPU package power — it includes the iGPU, but also the CPU cores — so the TDP gauge is intentionally left empty for it.
+- The RAPL counter is restricted inside containers. If the package fallback is desired, run the container as `--privileged` (verified: `cap_add` and bind mounts are not sufficient). Without it, power shows N/A exactly as before — no behavior change.
 
 ### Image tags
 
