@@ -845,9 +845,18 @@ class TestBattlemage:
     def test_discovered_with_name(self, tmp_path, backend):
         _make_bmg_card(tmp_path)
         self._backend(tmp_path, backend)
-        assert backend.discover_devices() == [
-            {"device": "card1", "name": "Intel Arc B570", "driver": "xe"},
-        ]
+        assert backend.discover_devices() == [{
+            "device": "card1", "name": "Intel Arc B570", "driver": "xe",
+            "kind": "discrete", "pci_slot": BMG_SLOT,
+        }]
+
+    def test_igpu_and_arc_side_by_side(self, tmp_path, backend):
+        _make_bmg_card(tmp_path, card_name="card0", slot="0000:00:02.0",
+                       device_id="0x7d67")
+        _make_bmg_card(tmp_path, card_name="card1")
+        self._backend(tmp_path, backend)
+        kinds = {d["device"]: d["kind"] for d in backend.discover_devices()}
+        assert kinds == {"card0": "integrated", "card1": "discrete"}
 
     def test_b580_name(self, tmp_path, backend):
         _make_bmg_card(tmp_path, device_id="0xE20B")
@@ -908,7 +917,7 @@ class TestBattlemage:
         backend._prev_time = time.time() - 1.0
         sample = backend.read_sample("card1")
 
-        assert sample["gpu_busy"] == pytest.approx(100.0, abs=1.0)
+        assert sample["gpu_busy"] == pytest.approx(50.0)
         assert sample["frequency"]["actual"] == 1200.0
         assert sample["engines"]["Video/0"]["busy"] == pytest.approx(50.0)
         assert sample["engines"]["Render/3D/0"]["busy"] == 0.0
@@ -917,15 +926,26 @@ class TestBattlemage:
         assert client["engine-classes"]["Video"]["busy"] == 50.0
         assert client["memory"]["vram0"]["total"] == 204800 * 1024
 
-    def test_idle_card_reads_idle(self, tmp_path, backend):
+    def test_idle_card_that_never_enters_c6_reads_idle(self, tmp_path, backend):
+        """Awake but doing nothing: idle residency stuck, no clients."""
         pci = _make_bmg_card(tmp_path)
         self._backend(tmp_path, backend)
         backend.read_sample("card1")
-        _write_gt(pci, "gt0", act=0, cur=400, idle=2000)
-        _write_gt(pci, "gt1", act=0, cur=400, idle=2000)
+        _write_gt(pci, "gt0", act=517, cur=400, idle=1000)
+        _write_gt(pci, "gt1", act=517, cur=400, idle=1000)
         backend._prev_time = time.time() - 1.0
         sample = backend.read_sample("card1")
-        assert sample["gpu_busy"] == pytest.approx(0.0, abs=1.0)
+        assert sample["gpu_busy"] == 0.0
+
+    def test_stuck_energy_counter_is_not_zero_watts(self, tmp_path, backend):
+        pci = _make_bmg_card(tmp_path)
+        self._backend(tmp_path, backend)
+        hwmon = pci / "hwmon" / "hwmon4"
+        hwmon.mkdir(parents=True)
+        (hwmon / "energy1_input").write_text("0\n")
+        backend.read_sample("card1")
+        backend._prev_time = time.time() - 1.0
+        assert backend.read_sample("card1")["power"] is None
 
     def test_clients_on_another_xe_card_are_ignored(self, tmp_path, backend):
         """An xe iGPU next to the Arc card must not leak its clients in."""

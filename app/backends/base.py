@@ -9,7 +9,8 @@ class GpuBackend(ABC):
     def discover_devices(self) -> list[dict]:
         """Discover available GPU devices.
 
-        Returns list of dicts with keys: device, name, driver.
+        Returns list of dicts with keys: device, name, driver, and
+        optionally kind ("integrated" / "discrete") and pci_slot.
         The driver field is internal metadata.
         """
 

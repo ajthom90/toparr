@@ -315,6 +315,17 @@
   }
 
   // --- GPU selector ---
+  // e.g. "Intel Arc B570 · Discrete · 03:00.0" / "Intel UHD 770 · Integrated"
+  function gpuLabel(gpu) {
+    var label = gpu.name;
+    if (gpu.kind === "integrated") label += " \u00b7 Integrated";
+    if (gpu.kind === "discrete") {
+      label += " \u00b7 Discrete";
+      if (gpu.pci_slot) label += " \u00b7 " + gpu.pci_slot.replace(/^0000:/, "");
+    }
+    return label;
+  }
+
   async function fetchGpus() {
     try {
       var resp = await fetch("/api/gpus");
@@ -326,7 +337,8 @@
       for (var i = 0; i < gpus.length; i++) {
         var opt = document.createElement("option");
         opt.value = gpus[i].device;
-        opt.textContent = gpus[i].name;
+        opt.textContent = gpuLabel(gpus[i]);
+        opt.setAttribute("data-name", gpus[i].name);
         if (gpus[i].device === data.current_device) opt.selected = true;
         sel.appendChild(opt);
       }
@@ -340,7 +352,8 @@
         });
         history = [];
         engineNames = [];
-        $("gpu-name").textContent = this.options[this.selectedIndex].textContent;
+        gpuName = this.options[this.selectedIndex].getAttribute("data-name");
+        $("gpu-name").textContent = gpuName;
       });
     } catch (e) {
       console.error("Failed to fetch GPUs:", e);

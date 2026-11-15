@@ -49,25 +49,34 @@ class GpuMonitor:
             if pid:
                 client["cmdline"] = self._read_cmdline(pid)
 
+    @staticmethod
+    def _public_gpu(gpu: dict) -> dict:
+        """The fields of a discovered GPU that are exposed over the API."""
+        return {
+            "device": gpu["device"],
+            "name": gpu["name"],
+            "kind": gpu.get("kind"),
+            "pci_slot": gpu.get("pci_slot"),
+        }
+
     def discover_gpus(self) -> list[dict]:
         if self._backend:
             self._available_gpus = self._backend.discover_devices()
-            return [
-                {"device": g["device"], "name": g["name"]}
-                for g in self._available_gpus
-            ]
+            return self.available_gpus
         return []
 
     @property
     def current_device(self) -> Optional[str]:
-        return self._device
+        """The card being monitored — the first one until another is picked."""
+        if self._device:
+            return self._device
+        if self._available_gpus:
+            return self._available_gpus[0]["device"]
+        return None
 
     @property
     def available_gpus(self) -> list[dict]:
-        return [
-            {"device": g["device"], "name": g["name"]}
-            for g in self._available_gpus
-        ]
+        return [self._public_gpu(g) for g in self._available_gpus]
 
     async def select_device(self, device: Optional[str]) -> None:
         self._device = device

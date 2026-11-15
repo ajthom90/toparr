@@ -121,11 +121,12 @@ Open **http://localhost:8080** in your browser.
 
 Battlemage cards (Arc B570 / B580) only work with the `xe` driver, which reports things a little differently from i915. No extra container settings are needed — the compose file above works as is.
 
-- **Utilization and frequency** come from both GTs the card exposes: `gt0` (render/compute) and `gt1` (media). A transcode runs almost entirely on the media GT, so the busy gauge and frequency follow whichever GT is working hardest.
+- **Frequency** comes from both GTs the card exposes: `gt0` (render/compute) and `gt1` (media). A transcode runs almost entirely on the media GT, so the gauge follows whichever GT is clocked highest.
+- **GPU busy** is the busiest engine class. The idle-residency counters i915 uses are not reliable on xe: an idle Battlemage card can stay out of its low-power state and would read as 100% busy.
 - **Engine bars** are scaled by the number of engines in each class. Battlemage has two video engines, so one saturated engine reads as 50% Video.
 - **Client memory** shows VRAM usage in the client detail view, since a discrete card keeps its buffers there rather than in system memory.
-- **Power** needs a kernel that exposes the card's energy counter (`hwmon/energy1_input`). On Battlemage that arrived after 6.12, so on older kernels — including TrueNAS SCALE 25.04 / 25.10 — power shows N/A. The CPU package fallback is not used for discrete cards because package power doesn't include them.
-- If an Intel iGPU is also present, pick the Arc card from the GPU dropdown. Clients are matched to the selected card by PCI address.
+- **Power** needs a kernel that exposes the card's energy counter (`hwmon/energy1_input`). On older xe drivers — including the 6.12 kernel in TrueNAS SCALE 25.04 / 25.10 — the counter is missing or never moves, and power shows N/A. The CPU package fallback is not used for discrete cards because package power doesn't include them.
+- If an Intel iGPU is also present, a dropdown appears next to the GPU name listing every Intel card, labelled Integrated or Discrete (with the PCI slot). Pick the Arc card there; the gauges, engines and clients all switch to it. Clients are matched to the selected card by PCI address.
 
 To check what Toparr sees, open `/api/debug` and look at the `devices` section: it lists the driver, PCI ID, the GTs found, and whether an energy counter is available.
 

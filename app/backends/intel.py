@@ -518,10 +518,19 @@ class IntelBackend(GpuBackend):
                 continue
 
             name = self._detect_gpu_name(card)
+            slot = self._pci_slot(card)
+            if slot is None:
+                kind = None
+            elif slot == self.IGPU_PCI_SLOT:
+                kind = "integrated"
+            else:
+                kind = "discrete"
             devices.append({
                 "device": card,
                 "name": name,
                 "driver": driver,
+                "kind": kind,
+                "pci_slot": slot,
             })
         return devices
 
@@ -533,9 +542,11 @@ class IntelBackend(GpuBackend):
         # Frequency
         frequency = self._read_frequency(device, driver)
 
-        # RC6 / GPU busy. With more than one GT (xe render + media) the
-        # card is as busy as its busiest GT.
-        idle_ms = self._read_idle_ms(device, driver)
+        # RC6 / GPU busy. On xe the idle residency counters are not a
+        # usable load signal: a Battlemage card that is doing nothing can
+        # sit out of GT-C6 indefinitely, which would read as 100% busy.
+        # For xe, busy comes from engine utilization further down instead.
+        idle_ms = {} if driver == "xe" else self._read_idle_ms(device, driver)
         gpu_busy = None
         prev_idle = self._prev_rc6_ms.get(device) or {}
         if wall_time_s > 0:
@@ -555,7 +566,11 @@ class IntelBackend(GpuBackend):
             delta_uj = energy_uj - prev_energy
             if delta_uj < 0:
                 delta_uj += 2 ** 32  # counter wraparound
-            power_watts = delta_uj / (wall_time_s * 1_000_000)
+            # A powered card never draws exactly nothing. A counter that
+            # doesn't move is one the driver isn't updating (seen with
+            # Battlemage on older xe), so report it as unavailable.
+            if delta_uj > 0:
+                power_watts = delta_uj / (wall_time_s * 1_000_000)
         self._prev_energy_uj[device] = energy_uj
 
         # Package power fallback (RAPL) for GPUs without hwmon energy.
