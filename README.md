@@ -29,11 +29,11 @@ This application has been developed and tested on the following configurations:
 
 Intel Arc A-series discrete GPUs (Alchemist) have also been tested and confirmed working with the i915 driver — see [#4](https://github.com/ajthom90/toparr/issues/4) for details.
 
-> **Note:** Intel Battlemage (B-series) discrete GPUs are **not currently supported**. If you have a Battlemage card and are able to test, PRs are welcome!
+Intel Arc B-series discrete GPUs (Battlemage — B570, B580) are supported through the `xe` driver. See [Arc B-series (Battlemage)](#arc-b-series-battlemage) for what to expect.
 
 > **Disclaimer:** This software is provided as-is and may not work on all hardware configurations, kernels, or Linux distributions. In particular:
 >
-> - **Intel integrated GPUs and Arc A-series (Alchemist) GPUs using the i915 driver are supported.** Battlemage GPUs and the xe driver have not been tested and may require modifications.
+> - **Intel integrated GPUs and Arc A-series (Alchemist) GPUs using the i915 driver are supported, as are Arc B-series (Battlemage) GPUs using the xe driver.** Other xe hardware (Lunar Lake / Arrow Lake iGPUs, Arc Pro B-series) should work the same way but has not been tested.
 > - **Kernel compatibility varies.** Different kernel versions may have different debugfs layouts, fdinfo formats, or perf counter access methods. The per-client tracking feature requires kernel 5.19+ with fdinfo support.
 > - **Container runtime differences** between Docker, Podman, and other runtimes may affect device access, capability handling, or PID namespace behavior.
 > - **NAS and appliance OSes** (TrueNAS, Unraid, Synology, etc.) may have custom kernels with non-standard module configurations.
@@ -53,6 +53,7 @@ If anyone has any of the following hardware and would like to test this applicat
 - Linux host with an Intel GPU (see [Tested Setup](#tested-setup) above)
 - Docker and Docker Compose
 - Kernel 4.16+ (for i915 perf support); kernel 5.19+ recommended for per-client fdinfo
+- Arc B-series (Battlemage): kernel 6.12+, where the `xe` driver supports these cards out of the box
 
 ## Installation
 
@@ -116,6 +117,18 @@ Open **http://localhost:8080** in your browser.
 - **Integrated GPUs** (UHD 630/730/770, etc.) expose no GPU-domain energy counter, so Toparr falls back to the Intel RAPL *package* domain and reports it as `power.PKG` (rendered as "PKG (CPU package)" in the UI). This is CPU package power — it includes the iGPU, but also the CPU cores — so the TDP gauge is intentionally left empty for it.
 - The RAPL counter is restricted inside containers. If the package fallback is desired, run the container as `--privileged` (verified: `cap_add` and bind mounts are not sufficient). Without it, power shows N/A exactly as before — no behavior change.
 
+### Arc B-series (Battlemage)
+
+Battlemage cards (Arc B570 / B580) only work with the `xe` driver, which reports things a little differently from i915. No extra container settings are needed — the compose file above works as is.
+
+- **Utilization and frequency** come from both GTs the card exposes: `gt0` (render/compute) and `gt1` (media). A transcode runs almost entirely on the media GT, so the busy gauge and frequency follow whichever GT is working hardest.
+- **Engine bars** are scaled by the number of engines in each class. Battlemage has two video engines, so one saturated engine reads as 50% Video.
+- **Client memory** shows VRAM usage in the client detail view, since a discrete card keeps its buffers there rather than in system memory.
+- **Power** needs a kernel that exposes the card's energy counter (`hwmon/energy1_input`). On Battlemage that arrived after 6.12, so on older kernels — including TrueNAS SCALE 25.04 / 25.10 — power shows N/A. The CPU package fallback is not used for discrete cards because package power doesn't include them.
+- If an Intel iGPU is also present, pick the Arc card from the GPU dropdown. Clients are matched to the selected card by PCI address.
+
+To check what Toparr sees, open `/api/debug` and look at the `devices` section: it lists the driver, PCI ID, the GTs found, and whether an energy counter is available.
+
 ### Image tags
 
 | Tag | Description |
@@ -157,6 +170,7 @@ Browser  <──SSE──>  FastAPI (uvicorn)  <──stdout──>  intel_gpu_t
 | `GET /` | Dashboard UI |
 | `GET /api/status` | Current GPU state, history buffer, and metadata |
 | `GET /api/stream` | SSE stream of `gpu_data` events (JSON) |
+| `GET /api/debug` | Environment checks and per-card diagnostics (driver, PCI ID, GTs, energy counter) |
 
 ## Development
 
@@ -172,8 +186,7 @@ Tests run without a real GPU — they test JSON parsing, sample buffering, and t
 Contributions are welcome! This project has only been tested on one specific hardware/OS combination (see [Tested Setup](#tested-setup)), so there are many opportunities to help:
 
 - **Hardware support** — test on different Intel GPUs (older generations, different Alder/Raptor Lake SKUs) and report or fix compatibility issues
-- **Battlemage support** — Battlemage (B-series) GPUs are untested; if you have one, help us add support!
-- **Driver support** — add support for the `xe` driver used by newer Intel discrete GPUs
+- **xe driver coverage** — Arc B570 is covered; reports from other xe hardware (B580, Arc Pro B-series, Lunar Lake / Arrow Lake iGPUs) are welcome
 - **Kernel compatibility** — test on different kernel versions and distributions, fix any debugfs/fdinfo format differences
 - **Container runtimes** — verify and fix behavior on Podman, LXC, or other runtimes
 - **NAS platforms** — test on Unraid, Synology, or other NAS distributions

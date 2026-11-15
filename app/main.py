@@ -147,6 +147,7 @@ async def debug():
         "buffer_size": len(monitor._buffer),
         "subscriber_count": len(monitor._subscribers),
         "environment_checks": checks,
+        "devices": backend.diagnostics(),
     }
 
 

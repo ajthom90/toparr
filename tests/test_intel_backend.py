@@ -177,28 +177,26 @@ class TestReadFrequency:
         assert freq == {"actual": 0.0, "requested": 0.0}
 
 
-class TestReadRC6:
+class TestReadIdle:
     def test_i915_rc6(self, tmp_path, backend):
         backend._drm_base = str(tmp_path)
         rc6_dir = tmp_path / "card0" / "gt" / "gt0"
         rc6_dir.mkdir(parents=True)
         (rc6_dir / "rc6_residency_ms").write_text("12345\n")
-        result = backend._read_rc6_ms("card0", "i915")
-        assert result == 12345.0
+        assert backend._read_idle_ms("card0", "i915") == {"gt0": 12345.0}
 
     def test_xe_idle_residency(self, tmp_path, backend):
         backend._drm_base = str(tmp_path)
         idle_dir = tmp_path / "card0" / "device" / "tile0" / "gt0" / "gtidle"
         idle_dir.mkdir(parents=True)
         (idle_dir / "idle_residency_ms").write_text("98765\n")
-        result = backend._read_rc6_ms("card0", "xe")
-        assert result == 98765.0
+        assert backend._read_idle_ms("card0", "xe") == {"tile0/gt0": 98765.0}
 
-    def test_missing_rc6_returns_none(self, tmp_path, backend):
+    def test_missing_rc6_returns_empty(self, tmp_path, backend):
         backend._drm_base = str(tmp_path)
         (tmp_path / "card0").mkdir(parents=True)
-        assert backend._read_rc6_ms("card0", "i915") is None
-        assert backend._read_rc6_ms("card0", "xe") is None
+        assert backend._read_idle_ms("card0", "i915") == {}
+        assert backend._read_idle_ms("card0", "xe") == {}
 
 
 class TestHwmonEnergy:
@@ -764,3 +762,226 @@ class TestReadSampleRaplPower:
         backend._prev_rapl_uj = {"card0": 123.0}
         backend.cleanup()
         assert backend._prev_rapl_uj == {}
+
+
+# ── Battlemage (Arc B570/B580) on the xe driver ──────────────────────
+
+BMG_SLOT = "0000:03:00.0"
+
+# What a Battlemage card reports for a transcode: the work lands on the
+# video engines (media GT) and the buffers live in VRAM.
+XE_BMG_FDINFO = f"""\
+pos:\t0
+flags:\t02100002
+mnt_id:\t27
+ino:\t1055
+drm-driver:\txe
+drm-client-id:\t12
+drm-pdev:\t{BMG_SLOT}
+drm-total-system:\t0
+drm-shared-system:\t0
+drm-active-system:\t0
+drm-resident-system:\t0
+drm-purgeable-system:\t0
+drm-total-gtt:\t192 KiB
+drm-shared-gtt:\t0
+drm-active-gtt:\t0
+drm-resident-gtt:\t192 KiB
+drm-total-vram0:\t204800 KiB
+drm-shared-vram0:\t0
+drm-active-vram0:\t0
+drm-resident-vram0:\t204800 KiB
+drm-total-stolen:\t0
+drm-cycles-rcs:\t0
+drm-total-cycles-rcs:\t{{total}}
+drm-cycles-bcs:\t0
+drm-total-cycles-bcs:\t{{total}}
+drm-cycles-vcs:\t{{vcs}}
+drm-total-cycles-vcs:\t{{total}}
+drm-engine-capacity-vcs:\t2
+drm-cycles-vecs:\t0
+drm-total-cycles-vecs:\t{{total}}
+drm-engine-capacity-vecs:\t2
+drm-cycles-ccs:\t0
+drm-total-cycles-ccs:\t{{total}}
+"""
+
+
+def _make_bmg_card(tmp_path, card_name="card1", slot=BMG_SLOT,
+                   device_id="0xe20c"):
+    """Create an xe card the way sysfs lays it out for a discrete GPU:
+    ``drm/cardN/device`` is a symlink to the PCI device, which has a
+    render GT (gt0) and a media GT (gt1). Returns the PCI device dir."""
+    pci = tmp_path / "devices" / slot
+    pci.mkdir(parents=True)
+    (pci / "vendor").write_text("0x8086\n")
+    (pci / "device").write_text(device_id + "\n")
+    os.symlink("/fake/drivers/xe", str(pci / "driver"))
+    for gt, act, cur, idle in (("gt0", 0, 400, 1000), ("gt1", 0, 400, 1000)):
+        _write_gt(pci, gt, act=act, cur=cur, idle=idle)
+    card = tmp_path / "drm" / card_name
+    card.mkdir(parents=True)
+    os.symlink(str(pci), str(card / "device"))
+    return pci
+
+
+def _write_gt(pci, gt, act, cur, idle):
+    freq = pci / "tile0" / gt / "freq0"
+    freq.mkdir(parents=True, exist_ok=True)
+    (freq / "act_freq").write_text(f"{act}\n")
+    (freq / "cur_freq").write_text(f"{cur}\n")
+    gtidle = pci / "tile0" / gt / "gtidle"
+    gtidle.mkdir(parents=True, exist_ok=True)
+    (gtidle / "idle_residency_ms").write_text(f"{idle}\n")
+
+
+class TestBattlemage:
+    def _backend(self, tmp_path, backend):
+        backend._drm_base = str(tmp_path / "drm")
+        backend._proc_path = str(tmp_path / "proc")
+        backend._powercap_base = str(tmp_path / "powercap")
+        return backend
+
+    def test_discovered_with_name(self, tmp_path, backend):
+        _make_bmg_card(tmp_path)
+        self._backend(tmp_path, backend)
+        assert backend.discover_devices() == [
+            {"device": "card1", "name": "Intel Arc B570", "driver": "xe"},
+        ]
+
+    def test_b580_name(self, tmp_path, backend):
+        _make_bmg_card(tmp_path, device_id="0xE20B")
+        self._backend(tmp_path, backend)
+        assert backend.discover_devices()[0]["name"] == "Intel Arc B580"
+
+    def test_pci_slot_and_discrete(self, tmp_path, backend):
+        _make_bmg_card(tmp_path)
+        self._backend(tmp_path, backend)
+        assert backend._pci_slot("card1") == BMG_SLOT
+        assert backend._is_discrete("card1") is True
+
+    def test_igpu_is_not_discrete(self, tmp_path, backend):
+        _make_bmg_card(tmp_path, card_name="card0", slot="0000:00:02.0")
+        self._backend(tmp_path, backend)
+        assert backend._is_discrete("card0") is False
+
+    def test_unknown_slot_is_not_discrete(self, tmp_path, backend):
+        """Plain directory instead of a PCI symlink → no slot, no guess."""
+        _make_card(tmp_path / "drm", "card0", driver="xe")
+        self._backend(tmp_path, backend)
+        assert backend._pci_slot("card0") is None
+        assert backend._is_discrete("card0") is False
+
+    def test_frequency_follows_the_media_gt(self, tmp_path, backend):
+        pci = _make_bmg_card(tmp_path)
+        self._backend(tmp_path, backend)
+        _write_gt(pci, "gt1", act=1200, cur=1250, idle=1000)
+        assert backend._read_frequency("card1", "xe") == {
+            "actual": 1200.0, "requested": 1250.0,
+        }
+
+    def test_idle_read_for_both_gts(self, tmp_path, backend):
+        _make_bmg_card(tmp_path)
+        self._backend(tmp_path, backend)
+        assert backend._read_idle_ms("card1", "xe") == {
+            "tile0/gt0": 1000.0, "tile0/gt1": 1000.0,
+        }
+
+    def test_transcode_sample(self, tmp_path, backend):
+        """Render GT asleep, media GT flat out on one of two video engines."""
+        pci = _make_bmg_card(tmp_path)
+        self._backend(tmp_path, backend)
+        proc = tmp_path / "proc"
+        _make_proc_fdinfo(
+            proc, 4242, 7,
+            XE_BMG_FDINFO.format(total=1_000_000, vcs=0), comm="ffmpeg\n",
+        )
+        backend.read_sample("card1")
+
+        # One second later: gt0 idled the whole time, gt1 never idled,
+        # and vcs ran for the full period on one engine out of two.
+        _write_gt(pci, "gt0", act=0, cur=400, idle=2000)
+        _write_gt(pci, "gt1", act=1200, cur=1250, idle=1000)
+        (proc / "4242" / "fdinfo" / "7").write_text(
+            XE_BMG_FDINFO.format(total=2_000_000, vcs=1_000_000)
+        )
+        backend._prev_time = time.time() - 1.0
+        sample = backend.read_sample("card1")
+
+        assert sample["gpu_busy"] == pytest.approx(100.0, abs=1.0)
+        assert sample["frequency"]["actual"] == 1200.0
+        assert sample["engines"]["Video/0"]["busy"] == pytest.approx(50.0)
+        assert sample["engines"]["Render/3D/0"]["busy"] == 0.0
+        client = sample["clients"]["12"]
+        assert client["name"] == "ffmpeg"
+        assert client["engine-classes"]["Video"]["busy"] == 50.0
+        assert client["memory"]["vram0"]["total"] == 204800 * 1024
+
+    def test_idle_card_reads_idle(self, tmp_path, backend):
+        pci = _make_bmg_card(tmp_path)
+        self._backend(tmp_path, backend)
+        backend.read_sample("card1")
+        _write_gt(pci, "gt0", act=0, cur=400, idle=2000)
+        _write_gt(pci, "gt1", act=0, cur=400, idle=2000)
+        backend._prev_time = time.time() - 1.0
+        sample = backend.read_sample("card1")
+        assert sample["gpu_busy"] == pytest.approx(0.0, abs=1.0)
+
+    def test_clients_on_another_xe_card_are_ignored(self, tmp_path, backend):
+        """An xe iGPU next to the Arc card must not leak its clients in."""
+        _make_bmg_card(tmp_path)
+        self._backend(tmp_path, backend)
+        proc = tmp_path / "proc"
+        igpu = XE_BMG_FDINFO.format(total=1, vcs=0).replace(
+            BMG_SLOT, "0000:00:02.0",
+        )
+        _make_proc_fdinfo(proc, 100, 3, igpu, comm="Xorg\n")
+        _make_proc_fdinfo(
+            proc, 200, 3, XE_BMG_FDINFO.format(total=1, vcs=0),
+            comm="ffmpeg\n",
+        )
+        sample = backend.read_sample("card1")
+        assert [c["name"] for c in sample["clients"].values()] == ["ffmpeg"]
+
+    def test_no_rapl_fallback_for_discrete_card(self, tmp_path, backend):
+        """CPU package power says nothing about a discrete card."""
+        _make_bmg_card(tmp_path)
+        self._backend(tmp_path, backend)
+        _make_powercap(tmp_path / "powercap", energy_uj=1000000)
+        backend.read_sample("card1")
+        _make_powercap(tmp_path / "powercap", energy_uj=2000000)
+        backend._prev_time = time.time() - 1.0
+        assert backend.read_sample("card1")["power"] is None
+
+    def test_card_power_from_hwmon(self, tmp_path, backend):
+        pci = _make_bmg_card(tmp_path)
+        self._backend(tmp_path, backend)
+        hwmon = pci / "hwmon" / "hwmon4"
+        hwmon.mkdir(parents=True)
+        (hwmon / "energy1_input").write_text("10000000\n")
+        backend.read_sample("card1")
+        (hwmon / "energy1_input").write_text("35000000\n")
+        backend._prev_time = time.time() - 1.0
+        sample = backend.read_sample("card1")
+        assert sample["power"]["GPU"] == pytest.approx(25.0, abs=0.5)
+
+    def test_diagnostics(self, tmp_path, backend):
+        _make_bmg_card(tmp_path)
+        self._backend(tmp_path, backend)
+        (report,) = backend.diagnostics()
+        assert report["driver"] == "xe"
+        assert report["pci_slot"] == BMG_SLOT
+        assert report["pci_device_id"] == "0xe20c"
+        assert report["discrete"] is True
+        assert report["gts"] == ["tile0/gt0", "tile0/gt1"]
+        assert report["energy_counter"] is False
+
+
+class TestXeCapacity:
+    def test_busy_scaled_by_engine_capacity(self, backend):
+        prev = {"1": {"engines": {"vcs": {
+            "cycles": 0, "total_cycles": 0, "capacity": 2}}}}
+        curr = {"1": {"engines": {"vcs": {
+            "cycles": 2000, "total_cycles": 1000, "capacity": 2}}}}
+        util = backend._compute_utilization(prev, curr, 1.0, "xe")
+        assert util["1"]["engines"]["vcs"] == pytest.approx(100.0)

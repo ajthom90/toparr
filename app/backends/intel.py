@@ -1,6 +1,7 @@
 """IntelBackend — sysfs/fdinfo-based GPU monitoring for i915 and xe drivers."""
 import glob
 import os
+import re
 import subprocess
 import time
 from typing import Optional
@@ -25,6 +26,21 @@ class IntelBackend(GpuBackend):
         "video-enhance": "VideoEnhance",
         "copy": "Blitter",
     }
+
+    # Names for devices that the pci.ids shipped in the image may not know
+    # yet (or only knows by codename, e.g. "Battlemage G21").
+    PCI_DEVICE_NAMES = {
+        "0xe20b": "Intel Arc B580",
+        "0xe20c": "Intel Arc B570",
+    }
+
+    # Intel integrated graphics always sit at this PCI address; anything
+    # else is a discrete card.
+    IGPU_PCI_SLOT = "0000:00:02.0"
+
+    _PCI_SLOT_RE = re.compile(
+        r"^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]$", re.IGNORECASE
+    )
 
     def __init__(self) -> None:
         self._drm_base: str = "/sys/class/drm"
@@ -68,6 +84,12 @@ class IntelBackend(GpuBackend):
         if product:
             return product
 
+        device_id = self._read_sysfs(
+            os.path.join(self._drm_base, card, "device", "device")
+        )
+        if device_id and device_id.lower() in self.PCI_DEVICE_NAMES:
+            return self.PCI_DEVICE_NAMES[device_id.lower()]
+
         # Fallback: try lspci
         try:
             pci_addr_path = os.path.join(self._drm_base, card, "device")
@@ -83,38 +105,83 @@ class IntelBackend(GpuBackend):
 
         return "Intel GPU"
 
+    def _pci_slot(self, card: str) -> Optional[str]:
+        """Return the PCI address of *card* (e.g. ``0000:03:00.0``)."""
+        device_path = os.path.join(self._drm_base, card, "device")
+        slot = os.path.basename(os.path.realpath(device_path))
+        if self._PCI_SLOT_RE.match(slot):
+            return slot.lower()
+        return None
+
+    def _is_discrete(self, card: str) -> bool:
+        """True when *card* is known to be a discrete (non-iGPU) card."""
+        slot = self._pci_slot(card)
+        return slot is not None and slot != self.IGPU_PCI_SLOT
+
+    def _xe_gt_dirs(self, card: str) -> list[str]:
+        """List the GT directories the xe driver exposes for *card*.
+
+        Xe2 cards (Battlemage) and Meteor Lake+ iGPUs have a separate
+        media GT, so there is usually a ``gt0`` (render/compute) and a
+        ``gt1`` (video decode/encode).
+        """
+        pattern = os.path.join(
+            self._drm_base, card, "device", "tile*", "gt[0-9]*"
+        )
+        return sorted(glob.glob(pattern))
+
     # ── Sysfs reads: frequency, RC6, power ─────────────────────────
 
     def _read_frequency(self, card: str, driver: str) -> dict:
         """Read actual and requested GPU frequency from sysfs."""
         if driver == "xe":
-            base = os.path.join(
-                self._drm_base, card, "device", "tile0", "gt0", "freq0"
-            )
-            actual = self._read_sysfs(os.path.join(base, "act_freq"))
-            requested = self._read_sysfs(os.path.join(base, "cur_freq"))
-        else:  # i915
-            base = os.path.join(self._drm_base, card)
-            actual = self._read_sysfs(os.path.join(base, "gt_act_freq_mhz"))
-            requested = self._read_sysfs(os.path.join(base, "gt_cur_freq_mhz"))
+            # Each GT clocks independently and an idle GT reports 0, so
+            # report the fastest one. Otherwise a transcode, which only
+            # wakes the media GT, would show the card sitting at 0 MHz.
+            actuals: list[float] = []
+            requesteds: list[float] = []
+            for gt_dir in self._xe_gt_dirs(card):
+                base = os.path.join(gt_dir, "freq0")
+                act = self._read_sysfs(os.path.join(base, "act_freq"))
+                req = self._read_sysfs(os.path.join(base, "cur_freq"))
+                if act:
+                    actuals.append(float(act))
+                if req:
+                    requesteds.append(float(req))
+            return {
+                "actual": max(actuals, default=0.0),
+                "requested": max(requesteds, default=0.0),
+            }
+
+        base = os.path.join(self._drm_base, card)
+        actual = self._read_sysfs(os.path.join(base, "gt_act_freq_mhz"))
+        requested = self._read_sysfs(os.path.join(base, "gt_cur_freq_mhz"))
         return {
             "actual": float(actual) if actual else 0.0,
             "requested": float(requested) if requested else 0.0,
         }
 
-    def _read_rc6_ms(self, card: str, driver: str) -> Optional[float]:
-        """Read RC6/idle residency in milliseconds."""
+    def _read_idle_ms(self, card: str, driver: str) -> dict:
+        """Read RC6/idle residency in milliseconds for every GT.
+
+        Returns ``{gt_name: residency_ms}``; empty when unavailable.
+        """
+        result: dict = {}
         if driver == "xe":
-            path = os.path.join(
-                self._drm_base, card,
-                "device", "tile0", "gt0", "gtidle", "idle_residency_ms",
-            )
+            for gt_dir in self._xe_gt_dirs(card):
+                val = self._read_sysfs(
+                    os.path.join(gt_dir, "gtidle", "idle_residency_ms")
+                )
+                if val is not None:
+                    key = "/".join(gt_dir.split(os.sep)[-2:])
+                    result[key] = float(val)
         else:  # i915
-            path = os.path.join(
+            val = self._read_sysfs(os.path.join(
                 self._drm_base, card, "gt", "gt0", "rc6_residency_ms",
-            )
-        val = self._read_sysfs(path)
-        return float(val) if val is not None else None
+            ))
+            if val is not None:
+                result["gt0"] = float(val)
+        return result
 
     def _find_hwmon(self, card: str) -> Optional[str]:
         """Find the hwmon directory under the card's device."""
@@ -209,6 +276,7 @@ class IntelBackend(GpuBackend):
         engines: dict = {}
         memory: dict = {}
         client_id: Optional[str] = None
+        pdev: Optional[str] = None
         found_driver = False
 
         for line in content.splitlines():
@@ -225,6 +293,10 @@ class IntelBackend(GpuBackend):
 
             if key == "drm-client-id":
                 client_id = value
+                continue
+
+            if key == "drm-pdev":
+                pdev = value.lower()
                 continue
 
             # ── i915 engine lines: drm-engine-<name>: <value> ns ─────
@@ -268,6 +340,7 @@ class IntelBackend(GpuBackend):
 
         return {
             "client_id": client_id,
+            "pdev": pdev,
             "engines": engines,
             "memory": memory,
         }
@@ -335,12 +408,21 @@ class IntelBackend(GpuBackend):
         delta_total = curr.get("total_cycles", 0) - prev.get("total_cycles", 0)
         if delta_total <= 0:
             return 0.0
-        return delta_cycles / delta_total * 100.0
+        # Cycles are summed over every engine in the class (Battlemage has
+        # two video engines), so scale by capacity to keep 100% = all busy.
+        capacity = max(curr.get("capacity", 1), 1)
+        return delta_cycles / delta_total * 100.0 / capacity
 
     # ── fdinfo scanning ──────────────────────────────────────────────
 
-    def _scan_fdinfo(self, proc_path: str, driver: str) -> list[dict]:
+    def _scan_fdinfo(
+        self, proc_path: str, driver: str, pdev: Optional[str] = None,
+    ) -> list[dict]:
         """Scan /proc/*/fdinfo/* for DRM clients matching *driver*.
+
+        When *pdev* (a PCI address) is given, clients on other cards that
+        happen to use the same driver are skipped — e.g. an xe iGPU next
+        to an Arc card.
 
         Returns a list of dicts, each with keys: client_id, engines,
         memory, pid, name.  Deduplicates by drm-client-id (first wins).
@@ -384,6 +466,10 @@ class IntelBackend(GpuBackend):
 
                 parsed = self._parse_fdinfo(content, driver)
                 if parsed is None:
+                    continue
+
+                client_pdev = parsed.pop("pdev")
+                if pdev and client_pdev and client_pdev != pdev:
                     continue
 
                 client_id = parsed["client_id"]
@@ -447,15 +533,19 @@ class IntelBackend(GpuBackend):
         # Frequency
         frequency = self._read_frequency(device, driver)
 
-        # RC6 / GPU busy
-        rc6_ms = self._read_rc6_ms(device, driver)
+        # RC6 / GPU busy. With more than one GT (xe render + media) the
+        # card is as busy as its busiest GT.
+        idle_ms = self._read_idle_ms(device, driver)
         gpu_busy = None
-        prev_rc6 = self._prev_rc6_ms.get(device)
-        if rc6_ms is not None and prev_rc6 is not None and wall_time_s > 0:
-            delta_rc6_ms = rc6_ms - prev_rc6
-            rc6_pct = (delta_rc6_ms / (wall_time_s * 1000)) * 100
-            gpu_busy = max(0.0, min(100.0, 100.0 - rc6_pct))
-        self._prev_rc6_ms[device] = rc6_ms
+        prev_idle = self._prev_rc6_ms.get(device) or {}
+        if wall_time_s > 0:
+            for gt, ms in idle_ms.items():
+                if gt not in prev_idle:
+                    continue
+                idle_pct = ((ms - prev_idle[gt]) / (wall_time_s * 1000)) * 100
+                gt_busy = max(0.0, min(100.0, 100.0 - idle_pct))
+                gpu_busy = gt_busy if gpu_busy is None else max(gpu_busy, gt_busy)
+        self._prev_rc6_ms[device] = idle_ms
 
         # Power (GPU-domain hwmon energy counter, wrap-safe)
         energy_uj = self._read_energy_uj(device)
@@ -468,9 +558,11 @@ class IntelBackend(GpuBackend):
             power_watts = delta_uj / (wall_time_s * 1_000_000)
         self._prev_energy_uj[device] = energy_uj
 
-        # Package power fallback (RAPL) for GPUs without hwmon energy
+        # Package power fallback (RAPL) for GPUs without hwmon energy.
+        # Only meaningful for iGPUs: a discrete card is not part of the
+        # CPU package, so its draw never shows up there.
         pkg_watts = None
-        if energy_uj is None:
+        if energy_uj is None and not self._is_discrete(device):
             rapl_uj = self._read_rapl_energy_uj(device)
             prev_rapl = self._prev_rapl_uj.get(device)
             if rapl_uj is not None and prev_rapl is not None and wall_time_s > 0:
@@ -481,7 +573,9 @@ class IntelBackend(GpuBackend):
             self._prev_rapl_uj[device] = rapl_uj
 
         # Per-process fdinfo
-        raw_clients = self._scan_fdinfo(self._proc_path, driver)
+        raw_clients = self._scan_fdinfo(
+            self._proc_path, driver, self._pci_slot(device),
+        )
 
         # Build counter snapshot for delta computation
         curr_counters: dict = {}
@@ -551,6 +645,33 @@ class IntelBackend(GpuBackend):
             "engines": engines,
             "clients": clients,
         }
+
+    def diagnostics(self) -> list[dict]:
+        """Describe what each Intel card exposes — used by /api/debug."""
+        report: list[dict] = []
+        for dev in self.discover_devices():
+            card, driver = dev["device"], dev["driver"]
+            entry: dict = {
+                "device": card,
+                "name": dev["name"],
+                "driver": driver,
+                "pci_slot": self._pci_slot(card),
+                "pci_device_id": self._read_sysfs(
+                    os.path.join(self._drm_base, card, "device", "device")
+                ),
+                "discrete": self._is_discrete(card),
+                "frequency": self._read_frequency(card, driver),
+                "idle_residency_ms": self._read_idle_ms(card, driver),
+                "hwmon": self._find_hwmon(card),
+                "energy_counter": self._read_energy_uj(card) is not None,
+            }
+            if driver == "xe":
+                entry["gts"] = [
+                    "/".join(d.split(os.sep)[-2:])
+                    for d in self._xe_gt_dirs(card)
+                ]
+            report.append(entry)
+        return report
 
     def cleanup(self) -> None:
         """Clear all internal state."""
