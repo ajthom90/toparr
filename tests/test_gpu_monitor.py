@@ -139,3 +139,30 @@ class TestDeviceManagement:
         assert monitor.current_device == "card1"
         assert monitor.gpu_name == "GPU B"
         assert backend.cleanup_called
+
+
+class TestGpuList:
+    def _monitor(self):
+        class Backend:
+            def discover_devices(self):
+                return [
+                    {"device": "card0", "name": "Intel UHD 770",
+                     "driver": "i915", "kind": "integrated",
+                     "pci_slot": "0000:00:02.0"},
+                    {"device": "card1", "name": "Intel Arc B570",
+                     "driver": "xe", "kind": "discrete",
+                     "pci_slot": "0000:03:00.0"},
+                ]
+        monitor = GpuMonitor(backend=Backend())
+        monitor.discover_gpus()
+        return monitor
+
+    def test_kind_and_slot_exposed(self):
+        gpus = self._monitor().available_gpus
+        assert gpus[1] == {
+            "device": "card1", "name": "Intel Arc B570",
+            "kind": "discrete", "pci_slot": "0000:03:00.0",
+        }
+
+    def test_current_device_defaults_to_first_card(self):
+        assert self._monitor().current_device == "card0"

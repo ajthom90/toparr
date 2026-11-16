@@ -315,6 +315,17 @@
   }
 
   // --- GPU selector ---
+  // e.g. "Intel Arc B570 · Discrete · 03:00.0" / "Intel UHD 770 · Integrated"
+  function gpuLabel(gpu) {
+    var label = gpu.name;
+    if (gpu.kind === "integrated") label += " \u00b7 Integrated";
+    if (gpu.kind === "discrete") {
+      label += " \u00b7 Discrete";
+      if (gpu.pci_slot) label += " \u00b7 " + gpu.pci_slot.replace(/^0000:/, "");
+    }
+    return label;
+  }
+
   async function fetchGpus() {
     try {
       var resp = await fetch("/api/gpus");
@@ -326,7 +337,8 @@
       for (var i = 0; i < gpus.length; i++) {
         var opt = document.createElement("option");
         opt.value = gpus[i].device;
-        opt.textContent = gpus[i].name;
+        opt.textContent = gpuLabel(gpus[i]);
+        opt.setAttribute("data-name", gpus[i].name);
         if (gpus[i].device === data.current_device) opt.selected = true;
         sel.appendChild(opt);
       }
@@ -340,7 +352,8 @@
         });
         history = [];
         engineNames = [];
-        $("gpu-name").textContent = this.options[this.selectedIndex].textContent;
+        gpuName = this.options[this.selectedIndex].getAttribute("data-name");
+        $("gpu-name").textContent = gpuName;
       });
     } catch (e) {
       console.error("Failed to fetch GPUs:", e);
@@ -361,6 +374,12 @@
     return num.toFixed(1) + " " + units[idx];
   }
 
+  function memoryRegionLabel(region) {
+    if (region === "system") return "Memory";
+    if (region.indexOf("vram") === 0) return "Memory (VRAM)";
+    return "Memory (" + region + ")";
+  }
+
   function openClientModal(client) {
     $("modal-title").textContent = (client.name || "Unknown") + " (PID " + (client.pid || "?") + ")";
 
@@ -373,11 +392,15 @@
     html += '<div class="cmdline">' + cmdline + '</div>';
     html += '</div>';
 
-    // Memory
-    if (client.memory && client.memory.system) {
-      var mem = client.memory.system;
+    // Memory. Integrated GPUs only use system memory; discrete cards
+    // (Arc) keep their allocations in VRAM, so show every region in use.
+    var regions = client.memory ? Object.keys(client.memory) : [];
+    for (var r = 0; r < regions.length; r++) {
+      var mem = client.memory[regions[r]];
+      if (!mem) continue;
+      if (regions[r] !== "system" && !mem.total) continue;
       html += '<div class="detail-section">';
-      html += '<div class="detail-label">Memory</div>';
+      html += '<div class="detail-label">' + memoryRegionLabel(regions[r]) + '</div>';
       html += '<table class="mem-table">';
       html += '<tr><td>Total</td><td>' + formatBytes(mem.total) + '</td></tr>';
       html += '<tr><td>Resident</td><td>' + formatBytes(mem.resident) + '</td></tr>';
